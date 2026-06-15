@@ -6,7 +6,7 @@ import dotenv from 'dotenv';
 import { PlanState, AuditLog, ClimateMeasure } from './src/types';
 import { GoogleGenAI } from '@google/genai';
 import bcrypt from 'bcryptjs';
-import { pool, initDatabase, setScenarioState } from './database';
+import { pool, initDatabase, setScenarioState } from './database.js';
 import { z } from 'zod';
 
 export interface UserAccount {
