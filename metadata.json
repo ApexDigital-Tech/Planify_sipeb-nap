@@ -1,0 +1,6 @@
+{
+  "name": "Sistema de Planificación SIPEB",
+  "description": "Sistema de Planificación ACC-RRD (SIPEB 2026-2030) del Ministerio de Planificación del Desarrollo.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
