@@ -328,7 +328,7 @@ Resumen de Vulnerabilidad: Nivel de riesgo hidrológico estocástico certificado
             )}
 
             {state.isSigned ? (
-              <div className="p-3 bg-emerald-50 border border-emerald-250 text-emerald-800 rounded-xl flex flex-col gap-1 text-[11.5px] leading-relaxed">
+              <div className="p-3 bg-emerald-50 border border-emerald-250 text-emerald-800 rounded-xl flex flex-col gap-1 text-[11.5px] leading-relaxed font-semibold">
                 <p className="font-extrabold uppercase tracking-wide text-xs">Certificado Estampado de Forma Exitosa</p>
                 <p><strong className="font-bold">Firmante:</strong> {state.signerName} ({state.signerRole})</p>
                 <p><strong className="font-bold">Token:</strong> Agetica Autoridad Certificadora Regional V3</p>
@@ -336,8 +336,8 @@ Resumen de Vulnerabilidad: Nivel de riesgo hidrológico estocástico certificado
             ) : (
               <button
                 onClick={handleSignDocument}
-                disabled={isSigning}
-                className="w-full py-2.5 bg-[#0058be] hover:bg-[#002f82] text-white font-black text-xs rounded-lg flex items-center justify-center gap-2 shadow-md active:scale-98 transition-colors cursor-pointer"
+                disabled={isSigning || (userRole !== 'SUPER_ADMIN' && userRole !== 'REVISOR_SENIOR')}
+                className="w-full py-2.5 bg-[#0058be] hover:bg-[#002f82] text-white font-black text-xs rounded-lg flex items-center justify-center gap-2 shadow-md active:scale-98 transition-colors cursor-pointer disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed disabled:shadow-none"
               >
                 {isSigning ? (
                   <>
@@ -371,8 +371,8 @@ Resumen de Vulnerabilidad: Nivel de riesgo hidrológico estocástico certificado
               ) : (
                 <button
                   onClick={handleSubmitOfficial}
-                  disabled={isSubmitting}
-                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg active:scale-98 transition-colors cursor-pointer"
+                  disabled={isSubmitting || (userRole !== 'SUPER_ADMIN' && userRole !== 'REVISOR_SENIOR')}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg active:scale-98 transition-colors cursor-pointer disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed disabled:shadow-none"
                 >
                   {isSubmitting ? (
                     <>

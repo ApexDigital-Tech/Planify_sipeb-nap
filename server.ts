@@ -1644,6 +1644,14 @@ app.post('/api/step8/sign', async (req, res) => {
 app.post('/api/plan/submit', async (req, res) => {
   const corrId = (req as any).correlationId;
 
+  // Validate active user role before allowing submission/consolidation
+  if (activeUserRole !== 'SUPER_ADMIN' && activeUserRole !== 'REVISOR_SENIOR') {
+    return res.status(403).json({
+      success: false,
+      error: `ROL INSUFICIENTE: Su sesión actual en el SIPEB tiene asignado el rol de '${activeUserRole}'. El envío oficial y la consolidación del expediente (Paso 8) son de atribución exclusiva de los roles 'SUPER_ADMIN' (Propietario / MPDyMA) y 'REVISOR_SENIOR' (Coordinador GIZ).`
+    });
+  }
+
   try {
     const before = await getPlanState(activePlanType);
     if (!before.isSigned) {

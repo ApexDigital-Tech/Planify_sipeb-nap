@@ -114,28 +114,28 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       role: "SUPER_ADMIN",
       email: "aliendredilan@gmail.com",
       pass: "sipeb.Dilan#2026",
-      desc: "Acceso Root (Requiere Reset)"
+      desc: "Acceso Root"
     },
     {
       name: "Carlos Saavedra",
       role: "REVISOR_SENIOR",
       email: "revisor.giz@planificacion.gob.bo",
-      pass: "GizNap*Bolivia2026",
+      pass: "Revisor.2026#GIZ",
       desc: "Coordinador GIZ (Firmador)"
     },
     {
       name: "Especialista PAD",
       role: "ESPECIALISTA_PAD",
-      email: "pad.tarija@planificacion.gob.bo",
-      pass: "Territorio@2026PAD",
-      desc: "Escritura PAD Tarija"
+      email: "especialista.pad@planificacion.gob.bo",
+      pass: "Pad.2026#Territorio",
+      desc: "Escritura PAD"
     },
     {
       name: "Especialista PES",
       role: "ESPECIALISTA_PES",
-      email: "pes.salud@planificacion.gob.bo",
-      pass: "Sectorial#2026PES",
-      desc: "Escritura PES Salud"
+      email: "especialista.pes@planificacion.gob.bo",
+      pass: "Pes.2026#Sectorial",
+      desc: "Escritura PES"
     }
   ];
 
