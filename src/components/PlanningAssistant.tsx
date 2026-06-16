@@ -194,8 +194,12 @@ export default function PlanningAssistant({ state, correlationId }: PlanningAssi
                     ? 'bg-blue-600 text-white rounded-tr-none shadow-sm'
                     : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none shadow-xs'
                 }`}>
-                  {/* Clean layout text rendering */}
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
+                  {/* Custom Markdown layout text rendering */}
+                  {msg.role === 'user' ? (
+                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                  ) : (
+                    parseMessageContent(msg.content)
+                  )}
                 </div>
               </div>
             ))}
@@ -203,10 +207,10 @@ export default function PlanningAssistant({ state, correlationId }: PlanningAssi
             {isTyping && (
               <div className="flex gap-2.5 max-w-[80%] items-center mr-auto">
                 <div className="w-6.5 h-6.5 rounded-full flex items-center justify-center border bg-[#131b2e] border-white/5 text-white select-none">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
                 </div>
-                <div className="bg-white border border-slate-150 p-2.5 px-4 rounded-full text-[11px] text-slate-400 font-bold tracking-wide italic">
-                  Escribiendo análisis del plan...
+                <div className="bg-white border border-slate-150 p-2.5 px-4 rounded-full text-[11px] text-slate-400 font-bold tracking-wide italic flex items-center gap-1.5 shadow-2xs">
+                  <span>Consultando bases y fuentes...</span>
                 </div>
               </div>
             )}
@@ -230,7 +234,7 @@ export default function PlanningAssistant({ state, correlationId }: PlanningAssi
               required
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="¿Qué pasa con la inercia institucional?"
+              placeholder="Pregunte sobre el plan, presupuestos o normas..."
               className="flex-1 text-xs border border-slate-200 rounded-lg py-2 px-3 text-slate-850 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
 
@@ -249,7 +253,7 @@ export default function PlanningAssistant({ state, correlationId }: PlanningAssi
       {/* Floating launcher button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="w-12 h-12 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg flex items-center justify-center hover:scale-105 active:scale-95 transition-all text-sm group cursor-pointer border border-blue-500"
+        className="w-12 h-12 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg flex items-center justify-center hover:scale-105 active:scale-95 transition-all text-sm group cursor-pointer border border-blue-550"
         title="Consultar al Asistente Técnico AI-SIPEB"
       >
         {isOpen ? (
@@ -257,11 +261,141 @@ export default function PlanningAssistant({ state, correlationId }: PlanningAssi
         ) : (
           <div className="relative">
             <MessageSquare className="w-5 h-5 text-white" />
-            <span className="absolute -top-1.5 -right-1.5 w-2 h-2 bg-emerald-450 rounded-full animate-bounce" />
+            <span className="absolute -top-1.5 -right-1.5 w-2 h-2 bg-emerald-500 rounded-full animate-bounce" />
           </div>
         )}
       </button>
 
     </div>
   );
+}
+
+// Simple client-side Markdown parser for beautiful AI chatbot visual layout
+function parseMessageContent(content: string): React.ReactNode {
+  // Check if content has markdown tables
+  if (content.includes('|')) {
+    const lines = content.split('\n');
+    const elements: React.ReactNode[] = [];
+    let inTable = false;
+    let tableRows: string[][] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      
+      if (line.startsWith('|') && line.endsWith('|')) {
+        inTable = true;
+        const cells = line.split('|').map(c => c.trim()).filter((_, idx, arr) => idx > 0 && idx < arr.length - 1);
+        if (cells.every(c => c.match(/^:-*-?:*$/) || c.match(/^-+$/))) {
+          continue; // Skip the divider row
+        }
+        tableRows.push(cells);
+      } else {
+        if (inTable && tableRows.length > 0) {
+          elements.push(
+            <div key={`table-${i}`} className="my-2.5 overflow-x-auto border border-slate-200 rounded-xl shadow-3xs max-w-full">
+              <table className="w-full text-left border-collapse text-[10px]">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 font-bold text-slate-800">
+                    {tableRows[0].map((cell, cIdx) => (
+                      <th key={cIdx} className="p-2.5 border-r border-slate-200 last:border-r-0 uppercase tracking-wider">{cell}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-150">
+                  {tableRows.slice(1).map((row, rIdx) => (
+                    <tr key={rIdx} className="hover:bg-slate-50/40">
+                      {row.map((cell, cIdx) => (
+                        <td key={cIdx} className="p-2.5 border-r border-slate-150 last:border-r-0 font-semibold text-slate-650">{cell}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+          tableRows = [];
+          inTable = false;
+        }
+        
+        if (line) {
+          if (line.startsWith('- ') || line.startsWith('* ')) {
+            const listText = line.substring(2);
+            elements.push(
+              <li key={`list-${i}`} className="ml-4 list-disc my-1 text-slate-700 font-semibold">
+                {renderInlineStyles(listText)}
+              </li>
+            );
+          } else {
+            elements.push(
+              <p key={`p-${i}`} className="my-1.5 whitespace-pre-wrap leading-relaxed font-semibold text-slate-750">
+                {renderInlineStyles(line)}
+              </p>
+            );
+          }
+        } else {
+          elements.push(<div key={`br-${i}`} className="h-1.5" />);
+        }
+      }
+    }
+
+    if (inTable && tableRows.length > 0) {
+      elements.push(
+        <div key="table-end" className="my-2.5 overflow-x-auto border border-slate-200 rounded-xl shadow-3xs max-w-full">
+          <table className="w-full text-left border-collapse text-[10px]">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-200 font-bold text-slate-800">
+                {tableRows[0].map((cell, cIdx) => (
+                  <th key={cIdx} className="p-2.5 border-r border-slate-200 last:border-r-0 uppercase tracking-wider">{cell}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-150">
+              {tableRows.slice(1).map((row, rIdx) => (
+                <tr key={rIdx} className="hover:bg-slate-50/40">
+                  {row.map((cell, cIdx) => (
+                    <td key={cIdx} className="p-2.5 border-r border-slate-150 last:border-r-0 font-semibold text-slate-650">{cell}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    return <div className="space-y-1.5">{elements}</div>;
+  }
+
+  const lines = content.split('\n');
+  return (
+    <div className="space-y-1">
+      {lines.map((line, i) => {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+          return (
+            <li key={i} className="ml-4 list-disc my-1 text-slate-700 font-semibold">
+              {renderInlineStyles(trimmed.substring(2))}
+            </li>
+          );
+        }
+        return (
+          <p key={i} className="my-1.5 whitespace-pre-wrap leading-relaxed font-semibold text-slate-750">
+            {renderInlineStyles(line)}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+function renderInlineStyles(text: string): React.ReactNode {
+  if (!text.includes('**')) return text;
+  
+  const parts = text.split('**');
+  return parts.map((part, idx) => {
+    if (idx % 2 === 1) {
+      return <strong key={idx} className="font-black text-slate-900">{part}</strong>;
+    }
+    return part;
+  });
 }

@@ -284,6 +284,22 @@ export async function initDatabase() {
       );
     `);
 
+    // Create sources table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sources (
+        id VARCHAR(50) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        url TEXT NOT NULL,
+        gemini_file_uri TEXT,
+        gemini_file_name TEXT,
+        gemini_uploaded_at TIMESTAMP WITH TIME ZONE,
+        user_id VARCHAR(255) NOT NULL REFERENCES users(email) ON DELETE CASCADE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
     // --- SEED USER ACCOUNTS ---
     const usersCountResult = await client.query("SELECT COUNT(*) FROM users;");
     if (parseInt(usersCountResult.rows[0].count) === 0) {
@@ -408,6 +424,22 @@ export async function initDatabase() {
           VALUES ($1, $2, $3, $4, $5, $6, $7);
         `, [i.id, i.user_id, i.name, i.status, i.type, i.last_modified, i.department]);
       }
+    }
+
+    // --- SEED SOURCES ---
+    const sourcesCountResult = await client.query("SELECT COUNT(*) FROM sources;");
+    if (parseInt(sourcesCountResult.rows[0].count) === 0) {
+      console.log("📚 Seeding default methodological source...");
+      await client.query(`
+        INSERT INTO sources (id, name, type, url, user_id)
+        VALUES ($1, $2, $3, $4, $5);
+      `, [
+        'source-methodology-default',
+        'Informe Técnico y Metodológico de la Plataforma SIPEB-NAP 2026-2030',
+        'local_reference',
+        '.agent/Informe Técnico y Metodológico de la Plataforma SIPEB-NAP 2026-2030.pdf',
+        'aliendredilan@gmail.com'
+      ]);
     }
 
     console.log("✓ [Postgres] Base de datos y semilla inicializadas correctamente en Supabase.");

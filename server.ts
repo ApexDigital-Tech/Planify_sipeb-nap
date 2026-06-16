@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import { PlanState, AuditLog, ClimateMeasure } from './src/types';
 import { GoogleGenAI } from '@google/genai';
 import bcrypt from 'bcryptjs';
@@ -21,7 +22,8 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Zod schemas for validation
 const roleEnum = z.enum(['SUPER_ADMIN', 'REVISOR_SENIOR', 'ESPECIALISTA_PAD', 'ESPECIALISTA_PES']);
@@ -740,6 +742,193 @@ app.post('/api/admin/users/delete', async (req, res) => {
     await logAudit(currentSessionUser?.email || 'admin@sipeb', 'IAM_USER_REVOKED', null, { email: userToDelete.email, role: userToDelete.role }, corrId);
 
     res.json({ success: true, msg: "Firma y acceso de usuario revocada exitosamente." });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// --- SOURCE MANAGER ENDPOINTS ---
+
+// GET /api/sources - List all sources
+app.get('/api/sources', async (req, res) => {
+  if (!currentSessionUser) {
+    return res.status(401).json({ success: false, error: "No authenticated session" });
+  }
+  try {
+    const result = await pool.query(
+      "SELECT * FROM sources WHERE user_id = $1 OR type = 'local_reference' ORDER BY created_at DESC;",
+      [currentSessionUser.email]
+    );
+    res.json({ success: true, sources: result.rows });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/sources - Create a new source
+app.post('/api/sources', async (req, res) => {
+  if (!currentSessionUser) {
+    return res.status(401).json({ success: false, error: "No authenticated session" });
+  }
+  try {
+    const { name, type, url, base64Data, filename } = req.body;
+    if (!name || !type) {
+      return res.status(400).json({ success: false, error: "El nombre y el tipo de fuente son obligatorios." });
+    }
+
+    const id = 'source-' + Date.now();
+    let finalUrl = url || '';
+    let geminiFileUri = null;
+    let geminiFileName = null;
+    const corrId = (req as any).correlationId || '';
+
+    if (type === 'direct_upload') {
+      if (!base64Data || !filename) {
+        return res.status(400).json({ success: false, error: "Los datos del archivo y el nombre son requeridos para subidas directas." });
+      }
+      
+      const uploadsDir = path.join(process.cwd(), 'uploads');
+      if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      }
+      
+      const fileExt = path.extname(filename);
+      const safeFilename = `${Date.now()}-${filename.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
+      const filePath = path.join(uploadsDir, safeFilename);
+      const fileBuffer = Buffer.from(base64Data, 'base64');
+      fs.writeFileSync(filePath, fileBuffer);
+      finalUrl = `/uploads/${safeFilename}`;
+
+      // Upload to Gemini File API
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (apiKey) {
+        try {
+          const aiClient = new GoogleGenAI({ apiKey });
+          let mimeType = 'application/octet-stream';
+          if (fileExt.toLowerCase() === '.pdf') mimeType = 'application/pdf';
+          else if (fileExt.toLowerCase() === '.txt') mimeType = 'text/plain';
+          else if (fileExt.toLowerCase() === '.docx') mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+          
+          console.log(`📤 Uploading file to Gemini File API: ${filePath} (${mimeType})`);
+          const uploadResult = await aiClient.files.upload({
+            file: filePath,
+            config: { mimeType }
+          });
+          geminiFileUri = uploadResult.uri;
+          geminiFileName = uploadResult.name;
+          console.log(`✓ Uploaded to Gemini: ${geminiFileUri} (${geminiFileName})`);
+        } catch (geminiErr: any) {
+          console.error("Failed to upload source file to Gemini File API:", geminiErr);
+        }
+      }
+    }
+
+    await pool.query(
+      `INSERT INTO sources (id, name, type, url, gemini_file_uri, gemini_file_name, gemini_uploaded_at, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`,
+      [id, name, type, finalUrl, geminiFileUri, geminiFileName, geminiFileUri ? new Date() : null, currentSessionUser.email]
+    );
+
+    // Audit Log
+    const logId = 'log-' + crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO audit_logs (id, timestamp, user_id, action, state_after, correlation_id)
+       VALUES ($1, CURRENT_TIMESTAMP, $2, $3, $4, $5);`,
+      [logId, currentSessionUser.email, 'CREATE_SOURCE', `Creada fuente "${name}" (Tipo: ${type})`, corrId]
+    );
+
+    res.json({ success: true, source: { id, name, type, url: finalUrl } });
+  } catch (err: any) {
+    console.error("Error creating source:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// PUT /api/sources/:id - Update an existing source
+app.put('/api/sources/:id', async (req, res) => {
+  if (!currentSessionUser) {
+    return res.status(401).json({ success: false, error: "No authenticated session" });
+  }
+  try {
+    const { id } = req.params;
+    const { name, url } = req.body;
+    const corrId = (req as any).correlationId || '';
+    
+    const checkResult = await pool.query("SELECT * FROM sources WHERE id = $1;", [id]);
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ success: false, error: "Fuente no encontrada." });
+    }
+    
+    const source = checkResult.rows[0];
+    if (source.user_id !== currentSessionUser.email && currentSessionUser.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({ success: false, error: "No posee permisos para modificar esta fuente." });
+    }
+
+    await pool.query(
+      "UPDATE sources SET name = $1, url = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3;",
+      [name || source.name, url || source.url, id]
+    );
+
+    res.json({ success: true, message: "Fuente actualizada exitosamente." });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE /api/sources/:id - Delete a source
+app.delete('/api/sources/:id', async (req, res) => {
+  if (!currentSessionUser) {
+    return res.status(401).json({ success: false, error: "No authenticated session" });
+  }
+  try {
+    const { id } = req.params;
+    const corrId = (req as any).correlationId || '';
+    
+    const checkResult = await pool.query("SELECT * FROM sources WHERE id = $1;", [id]);
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ success: false, error: "Fuente no encontrada." });
+    }
+    
+    const source = checkResult.rows[0];
+    if (source.user_id !== currentSessionUser.email && currentSessionUser.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({ success: false, error: "No posee permisos para eliminar esta fuente." });
+    }
+
+    // Delete local file if it was a direct upload
+    if (source.type === 'direct_upload' && source.url.startsWith('/uploads/')) {
+      const filePath = path.join(process.cwd(), source.url);
+      if (fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
+          console.log(`✓ Deleted local file: ${filePath}`);
+        } catch (fileErr) {
+          console.error(`Error deleting local file ${filePath}:`, fileErr);
+        }
+      }
+      
+      // Delete from Gemini File API
+      if (source.gemini_file_name && process.env.GEMINI_API_KEY) {
+        try {
+          const aiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+          await aiClient.files.delete({ name: source.gemini_file_name });
+          console.log(`✓ Deleted file from Gemini Files API: ${source.gemini_file_name}`);
+        } catch (geminiErr) {
+          console.error("Error deleting file from Gemini Files API:", geminiErr);
+        }
+      }
+    }
+
+    await pool.query("DELETE FROM sources WHERE id = $1;", [id]);
+
+    // Audit Log
+    const logId = 'log-' + crypto.randomUUID();
+    await pool.query(
+      `INSERT INTO audit_logs (id, timestamp, user_id, action, state_after, correlation_id)
+       VALUES ($1, CURRENT_TIMESTAMP, $2, $3, $4, $5);`,
+      [logId, currentSessionUser.email, 'DELETE_SOURCE', `Eliminada fuente "${source.name}"`, corrId]
+    );
+
+    res.json({ success: true, message: "Fuente eliminada exitosamente." });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -1829,7 +2018,7 @@ app.post('/api/chat', async (req, res) => {
     if (!apiKey) {
       return res.status(400).json({
         success: false,
-        error: "Falta configurar la clave secreta GEMEINI_API_KEY en la configuración del sistema (Ajustes -> Secretos)."
+        error: "Falta configurar la clave secreta GEMINI_API_KEY en la configuración del sistema (Ajustes -> Secretos)."
       });
     }
 
@@ -1838,7 +2027,6 @@ app.post('/api/chat', async (req, res) => {
       return res.status(400).json({ success: false, error: "Messages payload is required." });
     }
 
-    // Lazy initialization of Gemini developer client
     const aiClient = new GoogleGenAI({
       apiKey,
       httpOptions: {
@@ -1848,10 +2036,103 @@ app.post('/api/chat', async (req, res) => {
       }
     });
 
-    const activeModel = "gemini-3.5-flash";
+    const activeModel = "gemini-2.5-flash";
 
-    // Build chat content formatting history cleanly for @google/genai SDK
-    // System Instruction to force role and parameters
+    // 1. Fetch sources from database
+    const email = currentSessionUser?.email || '';
+    const sourcesResult = await pool.query(
+      "SELECT * FROM sources WHERE user_id = $1 OR type = 'local_reference';",
+      [email]
+    );
+
+    const geminiFilesToAttach: any[] = [];
+    const driveLinks: any[] = [];
+
+    // 2. Process sources and handle self-healing (autocuración)
+    for (const source of sourcesResult.rows) {
+      if (source.type === 'drive_link') {
+        driveLinks.push(source);
+      } else {
+        let fileUri = source.gemini_file_uri;
+        let fileName = source.gemini_file_name;
+        let uploadedAt = source.gemini_uploaded_at;
+        
+        // Expired if uploaded > 40 hours ago or if not uploaded yet
+        const isExpired = !uploadedAt || (Date.now() - new Date(uploadedAt).getTime() > 40 * 60 * 60 * 1000);
+        
+        if (isExpired || !fileUri) {
+          const localPath = path.join(process.cwd(), source.url);
+          if (fs.existsSync(localPath)) {
+            try {
+              const fileExt = path.extname(localPath);
+              let mimeType = 'application/octet-stream';
+              if (fileExt.toLowerCase() === '.pdf') mimeType = 'application/pdf';
+              else if (fileExt.toLowerCase() === '.txt') mimeType = 'text/plain';
+              else if (fileExt.toLowerCase() === '.docx') mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+              
+              console.log(`⚡ [Autocuración] Re-subiendo fuente a Gemini: ${localPath}`);
+              const uploadResult = await aiClient.files.upload({
+                file: localPath,
+                config: { mimeType }
+              });
+              
+              fileUri = uploadResult.uri;
+              fileName = uploadResult.name;
+              
+              // Update database
+              await pool.query(
+                `UPDATE sources 
+                 SET gemini_file_uri = $1, gemini_file_name = $2, gemini_uploaded_at = CURRENT_TIMESTAMP 
+                 WHERE id = $3;`,
+                [fileUri, fileName, source.id]
+              );
+              console.log(`✓ [Autocuración] Fuente re-subida exitosamente: ${fileUri}`);
+            } catch (uploadErr) {
+              console.error(`Error al subir fuente ${source.name} a Gemini:`, uploadErr);
+            }
+          } else {
+            console.warn(`Local file path does not exist for source ${source.name}: ${localPath}`);
+          }
+        }
+        
+        if (fileUri) {
+          let mimeType = 'application/octet-stream';
+          if (source.url.toLowerCase().endsWith('.pdf')) mimeType = 'application/pdf';
+          else if (source.url.toLowerCase().endsWith('.txt')) mimeType = 'text/plain';
+          else if (source.url.toLowerCase().endsWith('.docx')) mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+          
+          geminiFilesToAttach.push({
+            fileData: {
+              fileUri: fileUri,
+              mimeType: mimeType
+            }
+          });
+        }
+      }
+    }
+
+    // 3. Format messages and append drive links metadata to the last user message
+    const formattedContents = messages.map((msg, index) => {
+      const isLastMessage = index === messages.length - 1;
+      const isUser = msg.role !== 'assistant';
+      
+      const parts: any[] = [{ text: msg.content }];
+      
+      if (isLastMessage && isUser) {
+        if (driveLinks.length > 0) {
+          const driveMeta = "\n\n[Fuentes Adicionales de Google Drive disponibles para referencia del planificador]:\n" +
+            driveLinks.map(d => `- ${d.name}: ${d.url}`).join("\n");
+          parts[0].text += driveMeta;
+        }
+        parts.push(...geminiFilesToAttach);
+      }
+      
+      return {
+        role: msg.role === 'assistant' ? 'model' : 'user',
+        parts: parts
+      };
+    });
+
     const systemInstruction = `Eres un Asesor Tecnológico Senior del Ministerio de Planificación del Desarrollo (MPDyMA) de Bolivia, experto en el Sistema de Planificación ACC-RRD (SIPEB 2026-2030).
 Tu deber es asistir al usuario (Arq. Marcelo Arce) en el llenado de su expediente garantizando la rigurosidad de los siguientes estándares institucionales:
 1. Geodesia de Proyecciones: Todas las coordenadas espaciales deben cumplir con el estándar SIRGAS/WGS84 de forma matemática. No se acepta PSAD56 ni otros formatos obsoletos.
@@ -1859,25 +2140,155 @@ Tu deber es asistir al usuario (Arq. Marcelo Arce) en el llenado de su expedient
 3. Integridad Transaccional: El presupuesto debe ser estricto y sin valores nulos en el Paso 7. Advierte que toda medida sin presupuesto disparará un ROLLBACK automático en el backend de validaciones.
 4. Flag de Inercia: Explica que si alguna dimensión de capacidad institucional en el Paso 5 es calificada con 1 (Crítico), se activa la inercia institucional, la cual bloquea la firma del Paso 8 a menos que se formule una medida de 'Fortalecimiento Técnico' con presupuesto financiado en el Paso 7.
 
+Si el usuario realiza una pregunta sobre datos reales en vivo (presupuestos, estado de pasos, logs de auditoría), debes utilizar tus herramientas (functions) para consultar la base de datos de Supabase y responder con la información real. Siempre que el usuario pregunte por presupuestos o medidas, muestra los datos formateados en tablas limpias de Markdown.
+Para responder preguntas normativas, metodológicas y de normas del sistema, consulta los documentos de referencia y PDFs adjuntos proporcionados como archivos.
 Sé profesional, conciso, respetuoso y profundamente técnico. Incorpora códigos de normas bolivianas de planificación como la Ley N° 777 (SPIE) y directivas ministeriales de cambio climático. Respond in Spanish.`;
 
-    // Format messages for ai.models.generateContent containing the dialogue history
-    // and config including systemInstruction
-    const formattedContents = messages.map(msg => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }]
-    }));
+    const functionDeclarations = [
+      {
+        name: "get_plan_details",
+        description: "Obtiene los detalles del estado de un plan específico (PES o PAD) en el sistema SIPEB, incluyendo pasos completados, vulnerabilidad, capacidad de adaptación, nivel de amenaza, riesgo, firmas e hitos del workflow.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            planId: {
+              type: "STRING",
+              enum: ["PES", "PAD"],
+              description: "El tipo de plan a consultar: 'PES' (Planes Sectoriales) o 'PAD' (Planes Territoriales Autonómicos)"
+            }
+          },
+          required: ["planId"]
+        }
+      },
+      {
+        name: "get_climate_measures",
+        description: "Obtiene el listado completo de medidas climáticas registradas para un plan específico (PES o PAD) con sus presupuestos plurianuales desglosados (2026 a 2030) y totales.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            planId: {
+              type: "STRING",
+              enum: ["PES", "PAD"],
+              description: "El tipo de plan a consultar: 'PES' o 'PAD'"
+            }
+          },
+          required: ["planId"]
+        }
+      },
+      {
+        name: "get_audit_logs",
+        description: "Obtiene la bitácora de auditoría transaccional de seguridad y negocio más reciente en el sistema.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            limit: {
+              type: "INTEGER",
+              description: "Cantidad máxima de logs a retornar (por defecto 20, máximo 100)"
+            }
+          }
+        }
+      }
+    ];
 
-    const result = await aiClient.models.generateContent({
+    const generateConfig: any = {
+      systemInstruction,
+      temperature: 0.2,
+      tools: [{ functionDeclarations }]
+    };
+
+    console.log("🤖 Iniciando consulta a Gemini...");
+    let response = await aiClient.models.generateContent({
       model: activeModel,
       contents: formattedContents,
-      config: {
-        systemInstruction,
-        temperature: 0.3
-      }
+      config: generateConfig
     });
 
-    const textResponse = result.text || "No se ha recibido una respuesta válida de la inteligencia artificial.";
+    let currentContents: any[] = [...formattedContents];
+
+    // Function Calling Loop
+    for (let iter = 0; iter < 5; iter++) {
+      const functionCalls = response.functionCalls;
+      if (!functionCalls || functionCalls.length === 0) {
+        break;
+      }
+
+      console.log(`🤖 Gemini solicita ejecutar funciones (${functionCalls.length}):`, JSON.stringify(functionCalls));
+
+      const modelContent = response.candidates?.[0]?.content;
+      if (modelContent) {
+        currentContents.push(modelContent);
+      }
+
+      const toolResponseParts = [];
+
+      for (const call of functionCalls) {
+        const { name, args } = call;
+        let output: any = {};
+
+        // Security / RBAC Gatekeeper inside function calling!
+        let accessGranted = true;
+        if (name === 'get_plan_details' || name === 'get_climate_measures') {
+          const targetPlanId = (args as any).planId;
+          if (currentSessionUser?.role === 'ESPECIALISTA_PAD' && targetPlanId === 'PES') {
+            accessGranted = false;
+            output = { error: "Acceso Restringido: Como Especialista PAD, usted no cuenta con permisos para consultar carteras sectoriales ministeriales (PES)." };
+          } else if (currentSessionUser?.role === 'ESPECIALISTA_PES' && targetPlanId === 'PAD') {
+            accessGranted = false;
+            output = { error: "Acceso Restringido: Como Especialista PES, usted no cuenta con permisos para consultar expedientes territoriales autónomos (PAD)." };
+          }
+        }
+
+        if (accessGranted) {
+          try {
+            if (name === 'get_plan_details') {
+              output = await getPlanState((args as any).planId);
+            } else if (name === 'get_climate_measures') {
+              const planId = (args as any).planId;
+              const measuresResult = await pool.query(
+                "SELECT * FROM climate_measures WHERE plan_id = $1;",
+                [planId]
+              );
+              output = {
+                planId,
+                totalMeasures: measuresResult.rows.length,
+                totalBudget: measuresResult.rows.reduce((sum, m) => sum + parseFloat(m.budget), 0),
+                measures: measuresResult.rows
+              };
+            } else if (name === 'get_audit_logs') {
+              const limit = (args as any).limit || 20;
+              const logsResult = await pool.query(
+                "SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT $1;",
+                [limit]
+              );
+              output = { logs: logsResult.rows };
+            }
+          } catch (err: any) {
+            console.error(`Error al ejecutar función de base de datos ${name}:`, err);
+            output = { error: err.message };
+          }
+        }
+
+        toolResponseParts.push({
+          functionResponse: {
+            name: name,
+            response: { result: output }
+          }
+        });
+      }
+
+      currentContents.push({
+        role: 'tool',
+        parts: toolResponseParts
+      });
+
+      response = await aiClient.models.generateContent({
+        model: activeModel,
+        contents: currentContents,
+        config: generateConfig
+      });
+    }
+
+    const textResponse = response.text || "No se ha recibido una respuesta válida de la inteligencia artificial.";
 
     res.json({
       success: true,
@@ -1899,6 +2310,13 @@ async function startServer() {
   try {
     await initDatabase();
     await initSession();
+    
+    // Ensure uploads directory exists and is served statically
+    const uploadsDir = path.join(process.cwd(), 'uploads');
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+    app.use('/uploads', express.static(uploadsDir));
   } catch (error) {
     console.error("Critical: Failed to initialize database or session:", error);
     process.exit(1);

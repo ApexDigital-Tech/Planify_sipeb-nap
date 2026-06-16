@@ -23,6 +23,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { PlanState, AuditLog } from '../types';
+import SourceManager from './SourceManager';
 
 interface DashboardProps {
   state: PlanState;
@@ -701,6 +702,21 @@ export default function Dashboard({ state, correlationId, onEnterExpediente, onS
             </table>
           </div>
         </div>
+      </div>
+
+      {/* 3.5 MÓDULO DE CONSULTA: Gestor de Fuentes & Documentos de Referencia */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-xs space-y-5">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 animate-pulse" />
+            <h3 className="text-base font-black text-slate-900 tracking-tight">MÓDULO DE CONSULTA: Gestor de Fuentes & Base de Conocimiento</h3>
+          </div>
+          <p className="text-xs text-slate-500 font-semibold">
+            Suba documentos normativos locales o vincule carpetas de Google Drive. El Asistente IA leerá e indexará estas fuentes dinámicamente en tiempo real para sus consultas.
+          </p>
+        </div>
+        
+        <SourceManager />
       </div>
 
       {/* 4. CAPA DE TRAZABILIDAD Y AUDITORÍA EN TIEMPO REAL (Actividad Reciente) */}
