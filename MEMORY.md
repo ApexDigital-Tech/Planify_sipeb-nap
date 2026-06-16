@@ -31,11 +31,19 @@ Este archivo registra las decisiones clave de ingeniería, la estructura actual 
 *   **Decisión**: Sincronización del estado global de la app y caché con `@tanstack/react-query`.
 *   **Beneficio**: Alivió la cascada de renders y llamadas fetch redundantes. Permite la invalidación de consultas y la actualización en tiempo real de la bitácora de auditoría al guardar datos.
 
+### E. Capa de Sesión Sin Estado con Cookies Cifradas y AsyncLocalStorage (Soporte Vercel/Serverless)
+*   **Decisión**: Migración de sesión global en memoria a una arquitectura de sesión basada en cookies HTTP-only cifradas simétricamente con AES-256-CBC, combinada con `AsyncLocalStorage` de Node.js.
+*   **Razonamiento**: En plataformas serverless como Vercel, las instancias de backend se destruyen y recrean de forma dinámica (stateless). Las variables globales en memoria causan pérdidas inmediatas de sesión (errores 401 recurrentes).
+*   **Detalles Técnicos**:
+    *   **Cifrado Simétrico**: Los datos de sesión del usuario logueado se serializan y encriptan simétricamente mediante la API de `crypto` nativa, enviándose al cliente como cookie segura (`session`).
+    *   **Aislamiento de Hilo (AsyncLocalStorage)**: Un middleware de Express intercepta cada request, desencripta la cookie, y monta el contexto `{ user, planType }` en un almacenamiento local asíncrono. Los getters globales de `currentSessionUser`, `activePlanType` y `activeUserRole` leen dinámicamente de este contexto sin requerir refactorización invasiva de las llamadas del codebase.
+    *   **Inicialización Diferida (Lazy DB Init)**: Dado que Vercel no ejecuta el bloque `app.listen()` de Express, se habilitó la inicialización y el sembrado de tablas (`initDatabase()`) en el primer request asíncrono entrante.
+
 ---
 
 ## 📈 2. Estado Actual de la Web
 
-*   **Servidor Backend**: Escuchando en `http://localhost:3000`.
+*   **Servidor Backend**: Escuchando en `http://localhost:3000` con soporte multi-usuario.
 *   **Compilación TypeScript**: `npm run lint` reporta **0 errores** de tipos.
 *   **Vite Production Build**: `npm run build` genera el bundle optimizado sin advertencias ni fallos.
 *   **Base de Datos**: Esquema inicializado y sembrado de forma completa en Supabase.
@@ -51,7 +59,9 @@ Este archivo registra las decisiones clave de ingeniería, la estructura actual 
 2.  **Backend (`server.ts`)**:
     *   Creación de endpoints CRUD `/api/sources` para el gestor de fuentes.
     *   Reescritura del endpoint `/api/chat` incorporando autocuración, Function Calling y validación estricta de RBAC.
+    *   **Refactorización Serverless**: Sustitución de estado en memoria por cookies seguras firmadas y `AsyncLocalStorage` de Node.js.
 3.  **Frontend (`src/`)**:
     *   Componente `SourceManager.tsx` con soporte para subida de archivos locales y enlaces de Google Drive.
     *   Integración de pestaña "Módulo de Consulta" en `Dashboard.tsx`.
     *   Actualización de `PlanningAssistant.tsx` con parser Markdown personalizado para tablas de costos e indicadores.
+

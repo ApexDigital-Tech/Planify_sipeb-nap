@@ -9,6 +9,12 @@ import bcrypt from 'bcryptjs';
 import { pool, initDatabase, setScenarioState } from './database.js';
 import { z } from 'zod';
 
+declare global {
+  var currentSessionUser: any;
+  var activePlanType: 'PES' | 'PAD';
+  var activeUserRole: string;
+}
+
 export interface UserAccount {
   name: string;
   email: string;
@@ -22,8 +28,126 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
+// Session Management with AsyncLocalStorage for stateless serverless functions (Vercel)
+import { AsyncLocalStorage } from 'async_hooks';
+
+const SESSION_SECRET = process.env.SESSION_SECRET || 'sipeb-secret-key-32bytes-long-123';
+
+function encryptSession(user: any): string {
+  const text = JSON.stringify(user);
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(SESSION_SECRET.slice(0, 32)), iv);
+  let encrypted = cipher.update(text, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  return `${iv.toString('hex')}:${encrypted}`;
+}
+
+function decryptSession(token: string): any {
+  try {
+    const parts = token.split(':');
+    if (parts.length !== 2) return null;
+    const iv = Buffer.from(parts[0], 'hex');
+    const encryptedText = parts[1];
+    const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(SESSION_SECRET.slice(0, 32)), iv);
+    let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return JSON.parse(decrypted);
+  } catch (e) {
+    return null;
+  }
+}
+
+function parseCookies(cookieHeader?: string) {
+  const list: { [key: string]: string } = {};
+  if (!cookieHeader) return list;
+  cookieHeader.split(';').forEach((cookie) => {
+    const parts = cookie.split('=');
+    list[parts.shift()!.trim()] = decodeURI(parts.join('='));
+  });
+  return list;
+}
+
+interface SessionContext {
+  user: any;
+  planType: 'PES' | 'PAD';
+}
+
+export const sessionStore = new AsyncLocalStorage<SessionContext>();
+
+Object.defineProperty(globalThis, 'currentSessionUser', {
+  get() {
+    const store = sessionStore.getStore();
+    return store ? store.user : null;
+  },
+  set(value) {
+    const store = sessionStore.getStore();
+    if (store) {
+      store.user = value;
+    }
+  },
+  configurable: true
+});
+
+Object.defineProperty(globalThis, 'activePlanType', {
+  get() {
+    const store = sessionStore.getStore();
+    return store ? store.planType : 'PAD';
+  },
+  set(value) {
+    const store = sessionStore.getStore();
+    if (store) {
+      store.planType = value;
+    }
+  },
+  configurable: true
+});
+
+Object.defineProperty(globalThis, 'activeUserRole', {
+  get() {
+    const user = (globalThis as any).currentSessionUser;
+    return user ? user.role : 'Guest';
+  },
+  set(value) {
+    // Getter resolves dynamically
+  },
+  configurable: true
+});
+
+let isDbInitialized = false;
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+app.use(async (req, res, next) => {
+  // Lazy DB init to support serverless cold starts
+  if (!isDbInitialized) {
+    isDbInitialized = true;
+    try {
+      await initDatabase();
+    } catch (err) {
+      console.error("Database lazy init failed:", err);
+      isDbInitialized = false;
+    }
+  }
+
+  // Parse session and plan type from cookies
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionToken = cookies['session'];
+  const planTypeCookie = cookies['plan_type'];
+
+  let user = null;
+  if (sessionToken) {
+    user = decryptSession(sessionToken);
+  }
+
+  const planType: 'PES' | 'PAD' = (planTypeCookie === 'PES' || planTypeCookie === 'PAD') ? planTypeCookie : 'PAD';
+
+  // Run downstream handlers within the AsyncLocalStorage session context
+  sessionStore.run({ user, planType }, () => {
+    next();
+  });
+});
+
 
 // Zod schemas for validation
 const roleEnum = z.enum(['SUPER_ADMIN', 'REVISOR_SENIOR', 'ESPECIALISTA_PAD', 'ESPECIALISTA_PES']);
@@ -123,27 +247,10 @@ const verifyDocumentSchema = z.object({
   content: z.string().min(1)
 });
 
-// Database state handlers
-let activePlanType: 'PES' | 'PAD' = 'PAD';
-let activeUserRole = 'SUPER_ADMIN';
-let currentSessionUser: any = null;
-
 async function initSession() {
-  try {
-    const userResult = await pool.query("SELECT email, name, role, force_password_reset FROM users WHERE role = 'SUPER_ADMIN' LIMIT 1;");
-    if (userResult.rows.length > 0) {
-      currentSessionUser = {
-        name: userResult.rows[0].name,
-        email: userResult.rows[0].email,
-        role: userResult.rows[0].role,
-        force_password_reset: userResult.rows[0].force_password_reset
-      };
-      activeUserRole = currentSessionUser.role;
-    }
-  } catch (err) {
-    console.error("Error initializing session from database:", err);
-  }
+  // Mocked for compatibility; state is cookie-based
 }
+
 
 async function getPlanState(type: 'PES' | 'PAD'): Promise<PlanState> {
   const planResult = await pool.query("SELECT * FROM plans WHERE id = $1;", [type]);
@@ -451,9 +558,15 @@ app.post('/api/profile/role', async (req, res) => {
         role: foundUser.role,
         force_password_reset: foundUser.force_password_reset
       };
-      activeUserRole = foundUser.role;
       
       await logAudit(currentSessionUser.email, 'CHANGE_USER_ROLE', { role: beforeRole }, { role }, corrId);
+
+      const token = encryptSession(currentSessionUser);
+      res.setHeader('Set-Cookie', [
+        `session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+        `plan_type=${activePlanType}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`
+      ]);
+
       const state = await getPlanState(activePlanType);
       return res.json({ success: true, role, state });
     }
@@ -492,7 +605,6 @@ app.post('/api/auth/login', async (req, res) => {
       role: user.role,
       force_password_reset: user.force_password_reset
     };
-    activeUserRole = user.role;
 
     // Auto-align scenario selection to avoid 403 blocks for incoming specialist roles
     const currentPlan = await getPlanState(activePlanType);
@@ -505,6 +617,12 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     await logAudit(user.email, 'IAM_USER_LOGIN', null, { email: user.email, role: user.role, force_password_reset: user.force_password_reset }, corrId);
+
+    const token = encryptSession(currentSessionUser);
+    res.setHeader('Set-Cookie', [
+      `session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+      `plan_type=${activePlanType}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`
+    ]);
 
     res.json({
       success: true,
@@ -552,7 +670,6 @@ app.post('/api/auth/force-reset', async (req, res) => {
       role: user.role,
       force_password_reset: false
     };
-    activeUserRole = user.role;
 
     const currentPlan = await getPlanState(activePlanType);
     if (user.role === 'ESPECIALISTA_PAD' && currentPlan.planType !== 'PAD') {
@@ -564,6 +681,12 @@ app.post('/api/auth/force-reset', async (req, res) => {
     }
 
     await logAudit(user.email, 'IAM_FORCE_PASSWORD_RESET_SUCCESS', null, { email: user.email, role: user.role }, corrId);
+
+    const token = encryptSession(currentSessionUser);
+    res.setHeader('Set-Cookie', [
+      `session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
+      `plan_type=${activePlanType}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`
+    ]);
 
     res.json({
       success: true,
@@ -588,12 +711,19 @@ app.get('/api/auth/current', async (req, res) => {
 
   try {
     const currentPlan = await getPlanState(activePlanType);
+    let planTypeChanged = false;
     if (currentSessionUser.role === 'ESPECIALISTA_PAD' && currentPlan.planType !== 'PAD') {
       activePlanType = 'PAD';
       await setScenarioState('PAD');
+      planTypeChanged = true;
     } else if (currentSessionUser.role === 'ESPECIALISTA_PES' && currentPlan.planType !== 'PES') {
       activePlanType = 'PES';
       await setScenarioState('PES');
+      planTypeChanged = true;
+    }
+
+    if (planTypeChanged) {
+      res.setHeader('Set-Cookie', `plan_type=${activePlanType}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`);
     }
 
     res.json({
@@ -617,7 +747,10 @@ app.post('/api/auth/logout', async (req, res) => {
     await logAudit(currentSessionUser.email, 'IAM_USER_LOGOUT', null, null, corrId);
   }
   currentSessionUser = null;
-  activeUserRole = 'Guest'; 
+  res.setHeader('Set-Cookie', [
+    'session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
+    'plan_type=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'
+  ]);
   res.json({ success: true });
 });
 
@@ -1230,6 +1363,8 @@ app.post('/api/plan/set-scenario', async (req, res) => {
       updated,
       corrId
     );
+
+    res.setHeader('Set-Cookie', `plan_type=${type}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`);
     
     res.json({ success: true, state: updated });
   } catch (err: any) {
