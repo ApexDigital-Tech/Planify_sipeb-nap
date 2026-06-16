@@ -5,7 +5,19 @@ import { PlanState, ClimateMeasure } from './src/types';
 
 dotenv.config();
 
-const connectionString = process.env.DATABASE_URL || "postgresql://postgres:Planify_sipeb-nap%232026@db.nkxhwutffmyhrhnoaeex.supabase.co:5432/postgres";
+let connectionString = process.env.DATABASE_URL || "postgresql://postgres.nkxhwutffmyhrhnoaeex:Planify_sipeb-nap%232026@aws-1-us-east-2.pooler.supabase.com:6543/postgres";
+
+// Defensive programming: rewrite direct IPv6-only Supabase hosts to the IPv4 pooler
+if (connectionString.includes("db.nkxhwutffmyhrhnoaeex.supabase.co")) {
+  console.log("⚡ [Postgres] Direct host detected in connection string. Rewriting to IPv4-compatible connection pooler...");
+  connectionString = connectionString
+    .replace("db.nkxhwutffmyhrhnoaeex.supabase.co:5432", "aws-1-us-east-2.pooler.supabase.com:6543")
+    .replace("db.nkxhwutffmyhrhnoaeex.supabase.co", "aws-1-us-east-2.pooler.supabase.com:6543");
+  
+  if (!connectionString.includes("postgres.nkxhwutffmyhrhnoaeex:")) {
+    connectionString = connectionString.replace("postgres:", "postgres.nkxhwutffmyhrhnoaeex:");
+  }
+}
 
 
 export const pool = new Pool({
