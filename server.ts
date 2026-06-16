@@ -919,18 +919,21 @@ app.post('/api/sources', async (req, res) => {
       if (!base64Data || !filename) {
         return res.status(400).json({ success: false, error: "Los datos del archivo y el nombre son requeridos para subidas directas." });
       }
-      
-      const uploadsDir = path.join(process.cwd(), 'uploads');
-      if (!fs.existsSync(uploadsDir)) {
-        fs.mkdirSync(uploadsDir, { recursive: true });
-      }
-      
+
       const fileExt = path.extname(filename);
       const safeFilename = `${Date.now()}-${filename.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
-      const filePath = path.join(uploadsDir, safeFilename);
+
+      // Use /tmp for serverless compatibility (Vercel runtime - only writable dir)
+      const tempDir = '/tmp';
+      const filePath = path.join(tempDir, safeFilename);
       const fileBuffer = Buffer.from(base64Data, 'base64');
-      fs.writeFileSync(filePath, fileBuffer);
-      finalUrl = `/uploads/${safeFilename}`;
+
+      try {
+        fs.writeFileSync(filePath, fileBuffer);
+      } catch (fsErr: any) {
+        console.error("Error writing temp file:", fsErr);
+        return res.status(500).json({ success: false, error: "No se pudo guardar el archivo temporalmente en el servidor." });
+      }
 
       // Upload to Gemini File API
       const apiKey = process.env.GEMINI_API_KEY;
@@ -941,7 +944,7 @@ app.post('/api/sources', async (req, res) => {
           if (fileExt.toLowerCase() === '.pdf') mimeType = 'application/pdf';
           else if (fileExt.toLowerCase() === '.txt') mimeType = 'text/plain';
           else if (fileExt.toLowerCase() === '.docx') mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-          
+
           console.log(`📤 Uploading file to Gemini File API: ${filePath} (${mimeType})`);
           const uploadResult = await aiClient.files.upload({
             file: filePath,
@@ -949,10 +952,23 @@ app.post('/api/sources', async (req, res) => {
           });
           geminiFileUri = uploadResult.uri;
           geminiFileName = uploadResult.name;
+          finalUrl = geminiFileUri || `gemini://${safeFilename}`;
           console.log(`✓ Uploaded to Gemini: ${geminiFileUri} (${geminiFileName})`);
         } catch (geminiErr: any) {
           console.error("Failed to upload source file to Gemini File API:", geminiErr);
+          // Still proceed: save with temp reference so the source is registered
+          finalUrl = `pending://gemini-upload-failed/${safeFilename}`;
         }
+      } else {
+        // No API key - store reference only
+        finalUrl = `local://${safeFilename}`;
+      }
+
+      // Clean up temp file after Gemini upload (serverless best practice)
+      try {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      } catch (cleanErr) {
+        console.warn("Could not clean temp file:", cleanErr);
       }
     }
 
@@ -1027,27 +1043,15 @@ app.delete('/api/sources/:id', async (req, res) => {
       return res.status(403).json({ success: false, error: "No posee permisos para eliminar esta fuente." });
     }
 
-    // Delete local file if it was a direct upload
-    if (source.type === 'direct_upload' && source.url.startsWith('/uploads/')) {
-      const filePath = path.join(process.cwd(), source.url);
-      if (fs.existsSync(filePath)) {
-        try {
-          fs.unlinkSync(filePath);
-          console.log(`✓ Deleted local file: ${filePath}`);
-        } catch (fileErr) {
-          console.error(`Error deleting local file ${filePath}:`, fileErr);
-        }
-      }
-      
-      // Delete from Gemini File API
-      if (source.gemini_file_name && process.env.GEMINI_API_KEY) {
-        try {
-          const aiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-          await aiClient.files.delete({ name: source.gemini_file_name });
-          console.log(`✓ Deleted file from Gemini Files API: ${source.gemini_file_name}`);
-        } catch (geminiErr) {
-          console.error("Error deleting file from Gemini Files API:", geminiErr);
-        }
+    // Delete from Gemini File API if the file was uploaded there
+    if (source.type === 'direct_upload' && source.gemini_file_name && process.env.GEMINI_API_KEY) {
+      try {
+        const aiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        await aiClient.files.delete({ name: source.gemini_file_name });
+        console.log(`✓ Deleted file from Gemini Files API: ${source.gemini_file_name}`);
+      } catch (geminiErr) {
+        console.error("Error deleting file from Gemini Files API:", geminiErr);
+        // Non-fatal: proceed with DB deletion even if Gemini cleanup fails
       }
     }
 
