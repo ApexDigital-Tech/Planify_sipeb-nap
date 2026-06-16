@@ -73,4 +73,5 @@ Este archivo registra las decisiones clave de ingeniería, la estructura actual 
 
 *   **Validar en Vercel**: Confirmar que el POST `/api/sources` con `direct_upload` ahora funciona en producción tras el fix de `/tmp`.
 *   **SESSION_SECRET en Vercel**: Para producción segura, agregar `SESSION_SECRET` como variable de entorno en el panel de Vercel (actualmente usa el valor default hardcodeado, funcional pero inseguro).
-*   **Expiración de archivos en Gemini Files API**: Los archivos subidos expiran tras 48h. El mecanismo de autocuración (auto-healing en `/api/chat`) los re-sube si el `gemini_file_uri` falla. Verificar que la lógica de autocuración en línea ~2176 del `server.ts` también use `/tmp` para el re-upload.
+*   **Expiración de archivos en Gemini Files API**: Los archivos subidos expiran tras 48h. Si las fuentes expiran frecuentemente, evaluar migración a **Supabase Storage** o **Vercel Blob** para persistencia permanente.
+*   **[CERRADO - 2026-06-16] Título de pestaña**: Corregido en `index.html` de "My Google AI Studio App" → **"Planify SIPEB"**. Idioma del HTML actualizado a `lang="es"`. Meta description SEO añadida.
