@@ -60,8 +60,17 @@ Este archivo registra las decisiones clave de ingeniería, la estructura actual 
     *   Creación de endpoints CRUD `/api/sources` para el gestor de fuentes.
     *   Reescritura del endpoint `/api/chat` incorporando autocuración, Function Calling y validación estricta de RBAC.
     *   **Refactorización Serverless**: Sustitución de estado en memoria por cookies seguras firmadas y `AsyncLocalStorage` de Node.js.
+    *   **[FIX v1.1.1 - 2026-06-16] Upload Serverless**: Corregido bug crítico donde `POST /api/sources` fallaba en Vercel al intentar escribir en `uploads/` (filesystem readonly). Solución: uso de `/tmp` (único directorio writable en Vercel Functions) como staging para el archivo antes del upload a Gemini File API, con limpieza automática post-upload. La URL almacenada en BD ahora es el `gemini_file_uri` directamente en lugar de una ruta local `/uploads/...`.
+    *   **[FIX v1.1.1] Delete Serverless**: Eliminada lógica de borrado de archivos locales en `DELETE /api/sources/:id` (ya no aplica en serverless). Ahora solo llama a `aiClient.files.delete()` de forma no-fatal.
 3.  **Frontend (`src/`)**:
     *   Componente `SourceManager.tsx` con soporte para subida de archivos locales y enlaces de Google Drive.
     *   Integración de pestaña "Módulo de Consulta" en `Dashboard.tsx`.
     *   Actualización de `PlanningAssistant.tsx` con parser Markdown personalizado para tablas de costos e indicadores.
 
+---
+
+## ⚠️ 4. Notas para Próxima Sesión
+
+*   **Validar en Vercel**: Confirmar que el POST `/api/sources` con `direct_upload` ahora funciona en producción tras el fix de `/tmp`.
+*   **SESSION_SECRET en Vercel**: Para producción segura, agregar `SESSION_SECRET` como variable de entorno en el panel de Vercel (actualmente usa el valor default hardcodeado, funcional pero inseguro).
+*   **Expiración de archivos en Gemini Files API**: Los archivos subidos expiran tras 48h. El mecanismo de autocuración (auto-healing en `/api/chat`) los re-sube si el `gemini_file_uri` falla. Verificar que la lógica de autocuración en línea ~2176 del `server.ts` también use `/tmp` para el re-upload.

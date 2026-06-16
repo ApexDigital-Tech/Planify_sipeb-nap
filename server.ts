@@ -2198,48 +2198,25 @@ app.post('/api/chat', async (req, res) => {
         
         // Expired if uploaded > 40 hours ago or if not uploaded yet
         const isExpired = !uploadedAt || (Date.now() - new Date(uploadedAt).getTime() > 40 * 60 * 60 * 1000);
-        
+
         if (isExpired || !fileUri) {
-          const localPath = path.join(process.cwd(), source.url);
-          if (fs.existsSync(localPath)) {
-            try {
-              const fileExt = path.extname(localPath);
-              let mimeType = 'application/octet-stream';
-              if (fileExt.toLowerCase() === '.pdf') mimeType = 'application/pdf';
-              else if (fileExt.toLowerCase() === '.txt') mimeType = 'text/plain';
-              else if (fileExt.toLowerCase() === '.docx') mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-              
-              console.log(`⚡ [Autocuración] Re-subiendo fuente a Gemini: ${localPath}`);
-              const uploadResult = await aiClient.files.upload({
-                file: localPath,
-                config: { mimeType }
-              });
-              
-              fileUri = uploadResult.uri;
-              fileName = uploadResult.name;
-              
-              // Update database
-              await pool.query(
-                `UPDATE sources 
-                 SET gemini_file_uri = $1, gemini_file_name = $2, gemini_uploaded_at = CURRENT_TIMESTAMP 
-                 WHERE id = $3;`,
-                [fileUri, fileName, source.id]
-              );
-              console.log(`✓ [Autocuración] Fuente re-subida exitosamente: ${fileUri}`);
-            } catch (uploadErr) {
-              console.error(`Error al subir fuente ${source.name} a Gemini:`, uploadErr);
-            }
-          } else {
-            console.warn(`Local file path does not exist for source ${source.name}: ${localPath}`);
-          }
+          // In serverless (Vercel), local files are not persisted - no autocure possible.
+          // The file must be re-uploaded manually via the Source Manager.
+          console.warn(`[Autocuración] Fuente "${source.name}" expiró o no está indexada en Gemini. No hay archivo local disponible en entorno serverless. El usuario debe re-subirla manualmente.`);
+          // Skip this source - do not attach to the chat context
+          continue;
         }
-        
+
         if (fileUri) {
+          // Determine mime type from gemini_file_uri or source name
+          const sourceName = source.name || '';
           let mimeType = 'application/octet-stream';
-          if (source.url.toLowerCase().endsWith('.pdf')) mimeType = 'application/pdf';
-          else if (source.url.toLowerCase().endsWith('.txt')) mimeType = 'text/plain';
-          else if (source.url.toLowerCase().endsWith('.docx')) mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-          
+          if (sourceName.toLowerCase().endsWith('.pdf') || (source.url || '').toLowerCase().endsWith('.pdf')) mimeType = 'application/pdf';
+          else if (sourceName.toLowerCase().endsWith('.txt') || (source.url || '').toLowerCase().endsWith('.txt')) mimeType = 'text/plain';
+          else if (sourceName.toLowerCase().endsWith('.docx') || (source.url || '').toLowerCase().endsWith('.docx')) mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+          // Default assumption: PDFs are most common for policy documents
+          else mimeType = 'application/pdf';
+
           geminiFilesToAttach.push({
             fileData: {
               fileUri: fileUri,
