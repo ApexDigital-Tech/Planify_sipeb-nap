@@ -46,7 +46,9 @@ const initialPlanStatePAD: Omit<PlanState, 'measures'> = {
     expertJustificationVerified: false,
     gedsiText: "",
     gedsiTextVerified: false,
-    locationCrossoverStatus: 'PENDING',
+    locationCrossoverStatus: 'SIN_CAPA_BASE_CARGADA',
+    geodesicResult: null,
+    geodesicStatusMessage: "Cargue una capa de amenaza y una de exposición para habilitar el análisis territorial.",
     cropsAffectedHectares: 0,
     populationExpCount: 0,
     projectionStandard: "SIRGAS-WGS84"
@@ -107,7 +109,9 @@ const initialPlanStatePES: Omit<PlanState, 'measures'> = {
     expertJustificationVerified: false,
     gedsiText: "",
     gedsiTextVerified: false,
-    locationCrossoverStatus: 'PENDING',
+    locationCrossoverStatus: 'SIN_CAPA_BASE_CARGADA',
+    geodesicResult: null,
+    geodesicStatusMessage: "Cargue una capa de amenaza y una de exposición para habilitar el análisis territorial.",
     cropsAffectedHectares: 0,
     populationExpCount: 0,
     projectionStandard: "SIRGAS-WGS84"
@@ -424,6 +428,79 @@ export async function initDatabase() {
           VALUES ($1, $2, $3, $4, $5, $6, $7);
         `, [i.id, i.user_id, i.name, i.status, i.type, i.last_modified, i.department]);
       }
+    }
+
+    // --- PostGIS Extension + Spatial Tables ---
+    try {
+      await client.query(`CREATE EXTENSION IF NOT EXISTS postgis;`);
+      console.log("🗺️ [PostGIS] Extension enabled.");
+    } catch (postgisErr: any) {
+      console.warn("⚠️ [PostGIS] Could not enable extension (may require superuser):", postgisErr.message);
+    }
+
+    // Geographic layers per instrument (capas_geograficas)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS capas_geograficas (
+        id VARCHAR(255) PRIMARY KEY,
+        instrumento_id VARCHAR(50) NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+        tipo_capa VARCHAR(20) NOT NULL CHECK (tipo_capa IN ('amenaza', 'exposicion')),
+        nombre_archivo VARCHAR(255) NOT NULL,
+        epsg_origen VARCHAR(50) NOT NULL DEFAULT 'EPSG:4326',
+        geometria GEOMETRY,
+        sha256_hash VARCHAR(64) NOT NULL,
+        tamanio_kb NUMERIC(10,2) NOT NULL DEFAULT 0,
+        cargado_por VARCHAR(255) NOT NULL,
+        fecha_carga TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        estado VARCHAR(30) NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE', 'VALIDO', 'ERROR_TOPOLOGIA')),
+        area_km2 NUMERIC(15,4)
+      );
+    `);
+
+    // Spatial index on capas_geograficas (only if PostGIS is available)
+    try {
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_capas_geo_geom ON capas_geograficas USING GIST(geometria);
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_capas_geo_instrumento ON capas_geograficas (instrumento_id, tipo_capa);
+      `);
+    } catch (idxErr: any) {
+      console.warn("⚠️ [PostGIS] Could not create spatial index:", idxErr.message);
+    }
+
+    // Intersection results per instrument (resultados_interseccion)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS resultados_interseccion (
+        id VARCHAR(255) PRIMARY KEY,
+        instrumento_id VARCHAR(50) NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+        capa_amenaza_id VARCHAR(255) NOT NULL,
+        capa_exposicion_id VARCHAR(255) NOT NULL,
+        geometria_resultado GEOMETRY,
+        area_interseccion_km2 NUMERIC(15,4) NOT NULL DEFAULT 0,
+        area_exposicion_km2 NUMERIC(15,4) NOT NULL DEFAULT 0,
+        porcentaje_afectacion NUMERIC(6,2) NOT NULL DEFAULT 0,
+        nivel_riesgo VARCHAR(20) NOT NULL DEFAULT 'BAJO',
+        metricas JSONB,
+        capa_nombre VARCHAR(255),
+        capa_fuente VARCHAR(500),
+        capa_fecha VARCHAR(100),
+        srid VARCHAR(50) DEFAULT 'EPSG:4326',
+        ejecutado_en TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        ejecutado_por VARCHAR(255) NOT NULL,
+        corr_id VARCHAR(255)
+      );
+    `);
+
+    // Spatial index on resultados_interseccion
+    try {
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_resultados_geo_geom ON resultados_interseccion USING GIST(geometria_resultado);
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_resultados_instrumento ON resultados_interseccion (instrumento_id);
+      `);
+    } catch (idxErr: any) {
+      console.warn("⚠️ [PostGIS] Could not create result spatial index:", idxErr.message);
     }
 
     // --- SEED SOURCES ---

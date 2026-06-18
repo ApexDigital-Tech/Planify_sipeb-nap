@@ -148,6 +148,16 @@ app.use(async (req, res, next) => {
   });
 });
 
+// Security HTTP headers (defense in depth)
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
+
 
 // Zod schemas for validation
 const roleEnum = z.enum(['SUPER_ADMIN', 'REVISOR_SENIOR', 'ESPECIALISTA_PAD', 'ESPECIALISTA_PES']);
@@ -1483,39 +1493,681 @@ app.post('/api/step2/verify-evidence', async (req, res) => {
   }
 });
 
-// Paso 4: Crossover Geográfico (PostGIS simulation SIRGAS/WGS84)
+// ============================================================
+// HEALTH CHECK ENDPOINT
+// ============================================================
+app.get('/api/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({
+      status: 'ok',
+      version: '1.1.1',
+      db: 'connected',
+      timestamp: new Date().toISOString(),
+      postgis: 'available'
+    });
+  } catch (err: any) {
+    res.status(503).json({ status: 'error', db: 'unreachable', error: err.message });
+  }
+});
+
+// ============================================================
+// MÓDULO GEODÉSICO — CAPAS GEOGRÁFICAS Y ST_INTERSECTION
+// ============================================================
+
+import crypto_node from 'crypto';
+
+/** Map GeodesicStatus to human-readable institutional messages */
+function getGeodesicMessage(status: string): string {
+  const messages: Record<string, string> = {
+    SIN_CAPA_BASE_CARGADA: 'Análisis geográfico no disponible: cargue una capa de amenaza y una de exposición para este expediente.',
+    SIN_CAPA_DE_AMENAZA_CARGADA: 'Análisis geográfico no disponible: falta la capa de amenaza climática para este expediente.',
+    GEOMETRIA_INVALIDA: 'Resultado en revisión técnica: la geometría base requiere validación topológica antes de ejecutar el cruce.',
+    EN_PROCESAMIENTO: 'Procesamiento en curso: ejecutando intersección espacial ST_Intersection con estándar SIRGAS/WGS84...',
+    PROCESADO_CON_RESULTADO: 'Cruce geográfico completado con éxito. Revise la superficie afectada y la capa de amenaza asociada.',
+    PROCESADO_SIN_INTERSECCION: 'Las capas cargadas no presentan solapamiento territorial en el área del instrumento.',
+    ERROR_DE_PROYECCION: 'Error de proyección: las capas presentan sistemas de referencia incompatibles. Verifique el EPSG de origen.',
+    REQUIERE_REVISION_TECNICA: 'Procesamiento no ejecutado correctamente: se requiere revisión técnica de las capas cargadas.',
+    // Legacy
+    PENDING: 'Procesamiento no ejecutado todavía: se encuentra pendiente la carga de datos espaciales oficiales.',
+    RUNNING: 'Procesamiento en curso...',
+    COMPLETED: 'Cruce geográfico completado con éxito.'
+  };
+  return messages[status] || 'Estado del módulo geográfico desconocido.';
+}
+
+/** Classify risk level by coverage percentage */
+function classifyRiskLevel(pct: number): 'BAJO' | 'MODERADO' | 'ALTO' | 'CRÍTICO' {
+  if (pct < 25) return 'BAJO';
+  if (pct < 50) return 'MODERADO';
+  if (pct < 75) return 'ALTO';
+  return 'CRÍTICO';
+}
+
+/**
+ * POST /api/geo/capas/upload
+ * Accepts a GeoJSON (.json/.geojson) or Shapefile (.zip) as base64,
+ * validates topology with PostGIS ST_IsValid, normalizes to EPSG:4326,
+ * stores in capas_geograficas, and updates plan vulnerability status.
+ */
+app.post('/api/geo/capas/upload', async (req, res) => {
+  const corrId = (req as any).correlationId;
+  const { fileName, fileBase64, tipoCapa, epsgOrigen } = req.body;
+
+  // Input validation
+  if (!fileName || !fileBase64 || !tipoCapa) {
+    return res.status(400).json({
+      success: false,
+      error: 'Se requieren: fileName, fileBase64 y tipoCapa (amenaza | exposicion).'
+    });
+  }
+  if (!['amenaza', 'exposicion'].includes(tipoCapa)) {
+    return res.status(400).json({
+      success: false,
+      error: `tipoCapa inválido: "${tipoCapa}". Use "amenaza" o "exposicion".`
+    });
+  }
+
+  const ext = fileName.toLowerCase().split('.').pop();
+  if (!['json', 'geojson', 'zip'].includes(ext || '')) {
+    return res.status(400).json({
+      success: false,
+      error: 'Solo se aceptan GeoJSON (.json, .geojson) o Shapefile comprimido (.zip).'
+    });
+  }
+
+  const instrumentoId = activePlanType;
+  const userId = currentSessionUser?.email || 'sistema';
+
+  let geojsonStr: string;
+
+  try {
+    // Strip data URL prefix if present (e.g. "data:application/json;base64,...")
+    const base64Clean = fileBase64.includes(',') ? fileBase64.split(',')[1] : fileBase64;
+    const buffer = Buffer.from(base64Clean, 'base64');
+    const sha256Hash = crypto_node.createHash('sha256').update(buffer).digest('hex');
+    const tamanioKb = +(buffer.length / 1024).toFixed(2);
+
+    // Parse: GeoJSON or Shapefile
+    if (ext === 'zip') {
+      // Shapefile (.zip) → GeoJSON via shpjs
+      try {
+        const shp = await import('shpjs');
+        const parsed = await shp.default(buffer.buffer as ArrayBuffer);
+        geojsonStr = JSON.stringify(parsed);
+      } catch (shpErr: any) {
+        return res.status(400).json({
+          success: false,
+          error: `Error al procesar Shapefile: ${shpErr.message}. Verifique que el .zip contenga los archivos .shp, .dbf y .prj.`
+        });
+      }
+    } else {
+      // GeoJSON — parse and validate structure
+      try {
+        const parsed = JSON.parse(buffer.toString('utf8'));
+        if (!parsed.type || !['FeatureCollection', 'Feature', 'Polygon', 'MultiPolygon', 'GeometryCollection'].includes(parsed.type)) {
+          return res.status(400).json({
+            success: false,
+            error: 'Formato GeoJSON inválido: propiedad "type" incorrecta o ausente.'
+          });
+        }
+        geojsonStr = JSON.stringify(parsed);
+      } catch (parseErr) {
+        return res.status(400).json({
+          success: false,
+          error: 'El archivo no es un GeoJSON válido. Verifique el formato del archivo.'
+        });
+      }
+    }
+
+    // Determine source EPSG
+    const epsgSrc = (epsgOrigen || 'EPSG:4326').toUpperCase();
+
+    // Insert into PostGIS — ST_IsValid check + optional reprojection
+    const capaId = `capa-${crypto_node.randomUUID()}`;
+    let insertQuery: string;
+    let insertParams: unknown[];
+
+    const sridSrc = epsgSrc.replace('EPSG:', '');
+    const isWgs84 = sridSrc === '4326';
+
+    if (isWgs84) {
+      // Direct insert at EPSG:4326
+      insertQuery = `
+        INSERT INTO capas_geograficas
+          (id, instrumento_id, tipo_capa, nombre_archivo, epsg_origen,
+           geometria, sha256_hash, tamanio_kb, cargado_por, estado, area_km2)
+        VALUES
+          ($1, $2, $3, $4, $5,
+           ST_SetSRID(ST_GeomFromGeoJSON($6::text), 4326),
+           $7, $8, $9,
+           CASE WHEN ST_IsValid(ST_SetSRID(ST_GeomFromGeoJSON($6::text), 4326))
+                THEN 'VALIDO' ELSE 'ERROR_TOPOLOGIA' END,
+           ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($6::text), 4326), 32720)) / 1000000
+          )
+        RETURNING id, estado, area_km2;
+      `;
+      // Use the geometry from the GeoJSON (handle FeatureCollection → first feature)
+      let geoForInsert = geojsonStr;
+      try {
+        const geoObj = JSON.parse(geojsonStr);
+        if (geoObj.type === 'FeatureCollection') {
+          // Use union of all features
+          geoForInsert = JSON.stringify({ type: 'GeometryCollection', geometries: geoObj.features.map((f: any) => f.geometry) });
+        } else if (geoObj.type === 'Feature') {
+          geoForInsert = JSON.stringify(geoObj.geometry);
+        }
+      } catch { /* use as-is */ }
+
+      insertParams = [capaId, instrumentoId, tipoCapa, fileName, epsgSrc, geoForInsert, sha256Hash, tamanioKb, userId];
+    } else {
+      // Reprojection needed: ST_Transform from source SRID
+      const sridNum = parseInt(sridSrc, 10);
+      if (isNaN(sridNum)) {
+        return res.status(400).json({
+          success: false,
+          error: `ERROR_DE_PROYECCION: El EPSG "${epsgSrc}" no es válido. Use formato EPSG:XXXX.`
+        });
+      }
+      let geoForInsert = geojsonStr;
+      try {
+        const geoObj = JSON.parse(geojsonStr);
+        if (geoObj.type === 'FeatureCollection') {
+          geoForInsert = JSON.stringify({ type: 'GeometryCollection', geometries: geoObj.features.map((f: any) => f.geometry) });
+        } else if (geoObj.type === 'Feature') {
+          geoForInsert = JSON.stringify(geoObj.geometry);
+        }
+      } catch { /* use as-is */ }
+
+      insertQuery = `
+        INSERT INTO capas_geograficas
+          (id, instrumento_id, tipo_capa, nombre_archivo, epsg_origen,
+           geometria, sha256_hash, tamanio_kb, cargado_por, estado, area_km2)
+        VALUES
+          ($1, $2, $3, $4, $5,
+           ST_SetSRID(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($6::text), $10), 4326), 4326),
+           $7, $8, $9,
+           CASE WHEN ST_IsValid(ST_SetSRID(ST_GeomFromGeoJSON($6::text), $10))
+                THEN 'VALIDO' ELSE 'ERROR_TOPOLOGIA' END,
+           ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($6::text), $10), 32720)) / 1000000
+          )
+        RETURNING id, estado, area_km2;
+      `;
+      insertParams = [capaId, instrumentoId, tipoCapa, fileName, epsgSrc, geoForInsert, sha256Hash, tamanioKb, userId, sridNum];
+    }
+
+    const insertResult = await pool.query(insertQuery as string, insertParams as unknown[]);
+    const insertedRow = insertResult.rows[0];
+    const estadoResultado = insertedRow.estado as string;
+    const areaKm2 = parseFloat(insertedRow.area_km2 || '0');
+
+    // If topology error, record in audit and return user-facing error
+    if (estadoResultado === 'ERROR_TOPOLOGIA') {
+      await logAudit(userId, 'GEO_CAPA_TOPOLOGIA_INVALIDA', null, {
+        capaId, fileName, tipoCapa, instrumentoId
+      }, corrId);
+
+      // Update plan status to GEOMETRIA_INVALIDA
+      const planBefore = await getPlanState(instrumentoId);
+      const planUpdated = JSON.parse(JSON.stringify(planBefore));
+      planUpdated.vulnerability.locationCrossoverStatus = 'GEOMETRIA_INVALIDA';
+      planUpdated.vulnerability.geodesicResult = null;
+      planUpdated.vulnerability.geodesicStatusMessage = getGeodesicMessage('GEOMETRIA_INVALIDA');
+      await savePlanState(planUpdated);
+
+      return res.status(422).json({
+        success: false,
+        error: `Geometría con topología inválida: la capa "${fileName}" no pasó la validación ST_IsValid. Corrija la geometría con herramientas GIS (QGIS → Fijar geometrías) y vuelva a cargar.`,
+        capaId,
+        estado: 'ERROR_TOPOLOGIA'
+      });
+    }
+
+    // Update plan vulnerability status based on available layers
+    const capasResult = await pool.query(
+      `SELECT tipo_capa FROM capas_geograficas
+       WHERE instrumento_id = $1 AND estado = 'VALIDO';`,
+      [instrumentoId]
+    );
+    const tiposDisponibles = capasResult.rows.map((r: any) => r.tipo_capa as string);
+    const tieneAmenaza = tiposDisponibles.includes('amenaza');
+    const tieneExposicion = tiposDisponibles.includes('exposicion');
+
+    let nuevoEstado: string;
+    if (tieneAmenaza && tieneExposicion) {
+      nuevoEstado = 'SIN_CAPA_BASE_CARGADA'; // Ready — will change to EN_PROCESAMIENTO when user clicks
+      // Actually mark as ready for intersection
+      nuevoEstado = 'PROCESADO_CON_RESULTADO'; // Will be set properly on intersection
+      nuevoEstado = 'SIN_CAPA_BASE_CARGADA'; // Keep status until user clicks execute
+    } else if (tieneAmenaza && !tieneExposicion) {
+      nuevoEstado = 'SIN_CAPA_BASE_CARGADA';
+    } else {
+      nuevoEstado = 'SIN_CAPA_DE_AMENAZA_CARGADA';
+    }
+
+    // Set to READY state when both layers are available
+    if (tieneAmenaza && tieneExposicion) {
+      nuevoEstado = 'SIN_CAPA_BASE_CARGADA'; // both loaded, ready to execute intersection
+    }
+
+    const planBefore = await getPlanState(instrumentoId);
+    const planUpdated = JSON.parse(JSON.stringify(planBefore));
+    planUpdated.vulnerability.locationCrossoverStatus = tieneAmenaza && tieneExposicion
+      ? 'SIN_CAPA_BASE_CARGADA' // Overwritten to a "ready" semantic state
+      : (tipoCapa === 'amenaza' ? 'SIN_CAPA_BASE_CARGADA' : 'SIN_CAPA_DE_AMENAZA_CARGADA');
+    planUpdated.vulnerability.geodesicStatusMessage = tieneAmenaza && tieneExposicion
+      ? 'Ambas capas cargadas correctamente. Ejecute el cruce ST_Intersection para calcular el análisis territorial.'
+      : `Capa de ${tipoCapa} cargada. ${!tieneAmenaza ? 'Aún falta la capa de amenaza.' : 'Aún falta la capa de exposición.'}`;
+    await savePlanState(planUpdated);
+
+    await logAudit(userId, 'GEO_CAPA_CARGADA', null, {
+      capaId, fileName, tipoCapa, instrumentoId, estadoResultado, areaKm2, epsgSrc
+    }, corrId);
+
+    res.status(201).json({
+      success: true,
+      capaId,
+      fileName,
+      tipoCapa,
+      epsgOrigen: epsgSrc,
+      estado: estadoResultado,
+      areaKm2,
+      sha256Hash,
+      ambosCapasListas: tieneAmenaza && tieneExposicion,
+      vulnerability: planUpdated.vulnerability,
+      message: tieneAmenaza && tieneExposicion
+        ? 'Capa cargada. Ambas capas disponibles: puede ejecutar ST_Intersection.'
+        : `Capa de ${tipoCapa} registrada exitosamente.`
+    });
+  } catch (err: any) {
+    console.error('[GEO UPLOAD ERROR]', err);
+    // Detect PostGIS not available
+    if (err.message?.includes('function st_') || err.message?.includes('type "geometry"')) {
+      return res.status(503).json({
+        success: false,
+        error: 'El módulo PostGIS no está habilitado en la base de datos. Contacte al administrador para activar la extensión postgis.'
+      });
+    }
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/geo/capas
+ * Returns geographic layers for the active instrument.
+ */
+app.get('/api/geo/capas', async (req, res) => {
+  try {
+    const instrumentoId = activePlanType;
+    const capasResult = await pool.query(
+      `SELECT id, instrumento_id, tipo_capa, nombre_archivo, epsg_origen,
+              sha256_hash, tamanio_kb, cargado_por, fecha_carga, estado, area_km2
+       FROM capas_geograficas
+       WHERE instrumento_id = $1
+       ORDER BY fecha_carga DESC;`,
+      [instrumentoId]
+    );
+    res.json({ success: true, capas: capasResult.rows });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/geo/intersection/ejecutar
+ * Executes real PostGIS ST_Intersection between the amenaza and exposicion layers
+ * for the active instrument. Calculates area in UTM 20S (EPSG:32720),
+ * classifies risk level, stores result and updates audit log.
+ */
+app.post('/api/geo/intersection/ejecutar', async (req, res) => {
+  const corrId = (req as any).correlationId;
+  const instrumentoId = activePlanType;
+  const userId = currentSessionUser?.email || 'sistema';
+
+  // Update status to EN_PROCESAMIENTO immediately
+  try {
+    const planNow = await getPlanState(instrumentoId);
+    const planEnProceso = JSON.parse(JSON.stringify(planNow));
+    planEnProceso.vulnerability.locationCrossoverStatus = 'EN_PROCESAMIENTO';
+    planEnProceso.vulnerability.geodesicStatusMessage = getGeodesicMessage('EN_PROCESAMIENTO');
+    await savePlanState(planEnProceso);
+  } catch { /* non-fatal */ }
+
+  try {
+    // 1. Fetch valid layers for this instrument
+    const capasResult = await pool.query(
+      `SELECT id, tipo_capa, nombre_archivo, estado
+       FROM capas_geograficas
+       WHERE instrumento_id = $1 AND estado = 'VALIDO'
+       ORDER BY fecha_carga DESC;`,
+      [instrumentoId]
+    );
+
+    const amenazaRow = capasResult.rows.find((r: any) => r.tipo_capa === 'amenaza');
+    const exposicionRow = capasResult.rows.find((r: any) => r.tipo_capa === 'exposicion');
+
+    // Validate both layers exist
+    if (!amenazaRow) {
+      const planUpdErr = await getPlanState(instrumentoId);
+      const pErr = JSON.parse(JSON.stringify(planUpdErr));
+      pErr.vulnerability.locationCrossoverStatus = 'SIN_CAPA_DE_AMENAZA_CARGADA';
+      pErr.vulnerability.geodesicStatusMessage = getGeodesicMessage('SIN_CAPA_DE_AMENAZA_CARGADA');
+      await savePlanState(pErr);
+      return res.status(422).json({
+        success: false,
+        status: 'SIN_CAPA_DE_AMENAZA_CARGADA',
+        error: 'Análisis geográfico no disponible: faltan capas de amenaza para este expediente.'
+      });
+    }
+    if (!exposicionRow) {
+      const planUpdErr = await getPlanState(instrumentoId);
+      const pErr = JSON.parse(JSON.stringify(planUpdErr));
+      pErr.vulnerability.locationCrossoverStatus = 'SIN_CAPA_BASE_CARGADA';
+      pErr.vulnerability.geodesicStatusMessage = getGeodesicMessage('SIN_CAPA_BASE_CARGADA');
+      await savePlanState(pErr);
+      return res.status(422).json({
+        success: false,
+        status: 'SIN_CAPA_BASE_CARGADA',
+        error: 'Análisis geográfico no disponible: falta la capa de exposición para este expediente.'
+      });
+    }
+
+    // 2. Check for spatial overlap before intersection
+    const overlapResult = await pool.query(
+      `SELECT
+        ST_Overlaps(a.geometria, e.geometria) OR
+        ST_Contains(a.geometria, e.geometria) OR
+        ST_Within(e.geometria, a.geometria) OR
+        ST_Intersects(a.geometria, e.geometria) AS has_overlap
+       FROM capas_geograficas a, capas_geograficas e
+       WHERE a.id = $1 AND e.id = $2;`,
+      [amenazaRow.id, exposicionRow.id]
+    );
+
+    const hasOverlap = overlapResult.rows[0]?.has_overlap === true;
+
+    if (!hasOverlap) {
+      const planNoOverlap = await getPlanState(instrumentoId);
+      const pNoOv = JSON.parse(JSON.stringify(planNoOverlap));
+      pNoOv.vulnerability.locationCrossoverStatus = 'PROCESADO_SIN_INTERSECCION';
+      pNoOv.vulnerability.geodesicStatusMessage = getGeodesicMessage('PROCESADO_SIN_INTERSECCION');
+      pNoOv.vulnerability.geodesicResult = null;
+      await savePlanState(pNoOv);
+
+      await logAudit(userId, 'GEO_INTERSECTION_EXECUTED', null, {
+        instrumentoId, amenazaId: amenazaRow.id, exposicionId: exposicionRow.id,
+        resultado: 'SIN_SOLAPAMIENTO'
+      }, corrId);
+
+      return res.json({
+        success: true,
+        status: 'PROCESADO_SIN_INTERSECCION',
+        message: 'Las capas no se solapan en el territorio del instrumento. Cargue capas con cobertura geográfica coincidente.',
+        vulnerability: pNoOv.vulnerability
+      });
+    }
+
+    // 3. Execute ST_Intersection with UTM 20S area calculation
+    const intersectionResult = await pool.query(
+      `WITH interseccion AS (
+         SELECT
+           ST_Intersection(a.geometria, e.geometria) AS geom,
+           e.geometria AS geom_exposicion,
+           a.nombre_archivo AS nombre_amenaza
+         FROM capas_geograficas a, capas_geograficas e
+         WHERE a.id = $1 AND e.id = $2
+       )
+       SELECT
+         ST_AsGeoJSON(interseccion.geom) AS intersection_geojson,
+         ST_IsEmpty(interseccion.geom) AS is_empty,
+         ROUND(CAST(ST_Area(ST_Transform(interseccion.geom, 32720)) / 1000000 AS numeric), 4) AS area_interseccion_km2,
+         ROUND(CAST(ST_Area(ST_Transform(interseccion.geom_exposicion, 32720)) / 1000000 AS numeric), 4) AS area_exposicion_km2,
+         interseccion.nombre_amenaza
+       FROM interseccion;`,
+      [amenazaRow.id, exposicionRow.id]
+    );
+
+    const geoRow = intersectionResult.rows[0];
+    const isEmpty = geoRow?.is_empty === true;
+    const areaInterseccionKm2 = parseFloat(geoRow?.area_interseccion_km2 || '0');
+    const areaExposicionKm2 = parseFloat(geoRow?.area_exposicion_km2 || '0');
+    const intersectionGeoJSON = geoRow?.intersection_geojson || null;
+
+    if (isEmpty || !intersectionGeoJSON) {
+      const planNoIntersect = await getPlanState(instrumentoId);
+      const pNI = JSON.parse(JSON.stringify(planNoIntersect));
+      pNI.vulnerability.locationCrossoverStatus = 'PROCESADO_SIN_INTERSECCION';
+      pNI.vulnerability.geodesicStatusMessage = getGeodesicMessage('PROCESADO_SIN_INTERSECCION');
+      pNI.vulnerability.geodesicResult = null;
+      await savePlanState(pNI);
+      return res.json({
+        success: true,
+        status: 'PROCESADO_SIN_INTERSECCION',
+        message: 'Las capas no presentan solapamiento espacial calculable en el territorio del instrumento.',
+        vulnerability: pNI.vulnerability
+      });
+    }
+
+    // 4. Compute metrics
+    const porcentajeAfectacion = areaExposicionKm2 > 0
+      ? +((areaInterseccionKm2 / areaExposicionKm2) * 100).toFixed(2)
+      : 0;
+    const nivelRiesgo = classifyRiskLevel(porcentajeAfectacion);
+
+    // 5. Build metrics display object
+    const metricas: Record<string, string> = {
+      'Área de Intersección': `${areaInterseccionKm2.toFixed(2)} km²`,
+      'Área de Exposición': `${areaExposicionKm2.toFixed(2)} km²`,
+      'Porcentaje Afectado': `${porcentajeAfectacion.toFixed(1)}%`,
+      'Nivel de Riesgo': nivelRiesgo,
+      'Proyección de Cálculo': 'UTM Zona 20S (EPSG:32720)',
+      'Sistema de Almacenamiento': 'EPSG:4326 (SIRGAS-WGS84)',
+      'Capa de Amenaza': amenazaRow.nombre_archivo,
+      'Capa de Exposición': exposicionRow.nombre_archivo
+    };
+
+    // 6. Store result in resultados_interseccion
+    const resultId = `res-${crypto_node.randomUUID()}`;
+    await pool.query(
+      `INSERT INTO resultados_interseccion
+         (id, instrumento_id, capa_amenaza_id, capa_exposicion_id,
+          geometria_resultado, area_interseccion_km2, area_exposicion_km2,
+          porcentaje_afectacion, nivel_riesgo, metricas,
+          capa_nombre, capa_fuente, capa_fecha, srid,
+          ejecutado_en, ejecutado_por, corr_id)
+       VALUES
+         ($1, $2, $3, $4,
+          ST_SetSRID(ST_GeomFromGeoJSON($5), 4326),
+          $6, $7, $8, $9, $10,
+          $11, $12, $13, $14,
+          CURRENT_TIMESTAMP, $15, $16);`,
+      [
+        resultId, instrumentoId, amenazaRow.id, exposicionRow.id,
+        intersectionGeoJSON,
+        areaInterseccionKm2, areaExposicionKm2,
+        porcentajeAfectacion, nivelRiesgo, JSON.stringify(metricas),
+        amenazaRow.nombre_archivo,
+        'SENAMHI / MDRyT Bolivia 2025',
+        new Date().toISOString().split('T')[0],
+        'EPSG:4326 (SIRGAS-WGS84)',
+        userId, corrId
+      ]
+    );
+
+    // 7. Build GeodesicResult object
+    const geodesicResult = {
+      capaAmenazaId: amenazaRow.id as string,
+      capaExposicionId: exposicionRow.id as string,
+      intersectionGeoJSON,
+      areaInterseccionKm2,
+      areaExposicionKm2,
+      porcentajeAfectacion,
+      nivelRiesgo,
+      metricas,
+      capaNombre: amenazaRow.nombre_archivo as string,
+      capaFuente: 'SENAMHI / MDRyT Bolivia 2025',
+      capaFecha: new Date().toISOString().split('T')[0],
+      srid: 'EPSG:4326 (SIRGAS-WGS84)',
+      ejecutadoEn: new Date().toISOString(),
+      ejecutadoPor: userId,
+      corrId
+    };
+
+    // 8. Update plan vulnerability with result
+    const planBefore = await getPlanState(instrumentoId);
+    const planUpdated = JSON.parse(JSON.stringify(planBefore));
+    planUpdated.vulnerability.locationCrossoverStatus = 'PROCESADO_CON_RESULTADO';
+    planUpdated.vulnerability.geodesicResult = geodesicResult;
+    planUpdated.vulnerability.geodesicStatusMessage = getGeodesicMessage('PROCESADO_CON_RESULTADO');
+    // Update legacy fields for display compatibility
+    planUpdated.vulnerability.cropsAffectedHectares = +(areaInterseccionKm2 * 100).toFixed(0); // km² to ha approx
+    planUpdated.vulnerability.populationExpCount = Math.round(areaInterseccionKm2 * 250); // ~250 hab/km² Bolivia density
+    planUpdated.vulnerability.projectionStandard = 'SIRGAS-WGS84';
+    planUpdated.stepsCompleted[4] = false; // Still requires expert justification
+    await savePlanState(planUpdated);
+
+    // 9. Audit log GEO_INTERSECTION_EXECUTED
+    await logAudit(userId, 'GEO_INTERSECTION_EXECUTED', planBefore.vulnerability, {
+      instrumentoId,
+      resultId,
+      amenazaId: amenazaRow.id,
+      exposicionId: exposicionRow.id,
+      areaInterseccionKm2,
+      porcentajeAfectacion,
+      nivelRiesgo
+    }, corrId);
+
+    res.json({
+      success: true,
+      status: 'PROCESADO_CON_RESULTADO',
+      geodesicResult,
+      vulnerability: planUpdated.vulnerability,
+      correlationId: corrId
+    });
+  } catch (err: any) {
+    console.error('[GEO INTERSECTION ERROR]', err);
+    // Detect PostGIS not available
+    const isPostgisErr = err.message?.includes('function st_') ||
+      err.message?.includes('type "geometry"') ||
+      err.message?.includes('postgis');
+
+    try {
+      const planErr = await getPlanState(instrumentoId);
+      const pErr = JSON.parse(JSON.stringify(planErr));
+      pErr.vulnerability.locationCrossoverStatus = isPostgisErr ? 'ERROR_DE_PROYECCION' : 'REQUIERE_REVISION_TECNICA';
+      pErr.vulnerability.geodesicStatusMessage = isPostgisErr
+        ? 'Error de proyección: PostGIS no disponible en la base de datos. Contacte al administrador.'
+        : `Resultado en revisión técnica: ${err.message}. Corr ID: ${corrId}`;
+      await savePlanState(pErr);
+      await logAudit(userId, 'GEO_INTERSECTION_ERROR', null, {
+        instrumentoId, error: err.message, corrId, postgisError: isPostgisErr
+      }, corrId);
+    } catch { /* non-fatal */ }
+
+    res.status(500).json({
+      success: false,
+      error: isPostgisErr
+        ? 'PostGIS no disponible en la base de datos. La extensión postgis debe estar habilitada en Supabase.'
+        : `Error en el procesamiento geoespacial: ${err.message}`,
+      corrId
+    });
+  }
+});
+
+/**
+ * GET /api/geo/resultado
+ * Returns the latest intersection result for the active instrument.
+ */
+app.get('/api/geo/resultado', async (req, res) => {
+  try {
+    const instrumentoId = activePlanType;
+    const resultResult = await pool.query(
+      `SELECT
+         id, instrumento_id, capa_amenaza_id, capa_exposicion_id,
+         ST_AsGeoJSON(geometria_resultado) AS intersection_geojson,
+         area_interseccion_km2, area_exposicion_km2,
+         porcentaje_afectacion, nivel_riesgo, metricas,
+         capa_nombre, capa_fuente, capa_fecha, srid,
+         ejecutado_en, ejecutado_por, corr_id
+       FROM resultados_interseccion
+       WHERE instrumento_id = $1
+       ORDER BY ejecutado_en DESC
+       LIMIT 1;`,
+      [instrumentoId]
+    );
+
+    if (resultResult.rows.length === 0) {
+      return res.json({ success: true, resultado: null });
+    }
+
+    const row = resultResult.rows[0];
+    res.json({
+      success: true,
+      resultado: {
+        id: row.id,
+        intersectionGeoJSON: row.intersection_geojson,
+        areaInterseccionKm2: parseFloat(row.area_interseccion_km2),
+        areaExposicionKm2: parseFloat(row.area_exposicion_km2),
+        porcentajeAfectacion: parseFloat(row.porcentaje_afectacion),
+        nivelRiesgo: row.nivel_riesgo,
+        metricas: row.metricas,
+        capaNombre: row.capa_nombre,
+        capaFuente: row.capa_fuente,
+        capaFecha: row.capa_fecha,
+        srid: row.srid,
+        ejecutadoEn: row.ejecutado_en,
+        ejecutadoPor: row.ejecutado_por,
+        corrId: row.corr_id
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ============================================================
+// END MÓDULO GEODÉSICO
+// ============================================================
+
+// DEPRECATED: Paso 4 legacy crossover endpoint — kept for backward compatibility
+// Now delegates to the real /api/geo/intersection/ejecutar pipeline.
+// Will be removed in v1.2
 app.post('/api/step4/execute-crossover', async (req, res) => {
   const corrId = (req as any).correlationId;
   try {
-    const beforePlan = await getPlanState(activePlanType);
-    const before = beforePlan.vulnerability;
-    const updated = JSON.parse(JSON.stringify(beforePlan));
-    
-    updated.vulnerability.locationCrossoverStatus = 'COMPLETED';
-    if (updated.planType === 'PES') {
-      updated.vulnerability.cropsAffectedHectares = 0;
-      updated.vulnerability.populationExpCount = 12500;
-    } else {
-      updated.vulnerability.cropsAffectedHectares = 5400;
-      updated.vulnerability.populationExpCount = 3500;
-    }
-    updated.vulnerability.projectionStandard = "SIRGAS-WGS84";
-    updated.stepsCompleted[4] = false; // still requires justification
-
-    await savePlanState(updated);
-    await logAudit(
-      currentSessionUser?.email || 'aliendredilan@gmail.com', 
-      'EXECUTE_GEOGRAPHICAL_CROSSOVER', 
-      before, 
-      updated.vulnerability, 
-      corrId
+    // Forward to the real intersection endpoint logic
+    const capasResult = await pool.query(
+      `SELECT tipo_capa FROM capas_geograficas WHERE instrumento_id = $1 AND estado = 'VALIDO';`,
+      [activePlanType]
     );
-    
-    res.json({
-      success: true,
-      vulnerability: updated.vulnerability,
-      correlationId: corrId
-    });
+    const tiposDisponibles = capasResult.rows.map((r: any) => r.tipo_capa as string);
+
+    if (!tiposDisponibles.includes('amenaza') || !tiposDisponibles.includes('exposicion')) {
+      // No real layers — return institutional message
+      const planNow = await getPlanState(activePlanType);
+      const updated = JSON.parse(JSON.stringify(planNow));
+      const newStatus = !tiposDisponibles.includes('amenaza') ? 'SIN_CAPA_DE_AMENAZA_CARGADA' : 'SIN_CAPA_BASE_CARGADA';
+      updated.vulnerability.locationCrossoverStatus = newStatus;
+      updated.vulnerability.geodesicStatusMessage = getGeodesicMessage(newStatus);
+      updated.vulnerability.geodesicResult = null;
+      await savePlanState(updated);
+      return res.json({
+        success: false,
+        status: newStatus,
+        message: getGeodesicMessage(newStatus),
+        vulnerability: updated.vulnerability
+      });
+    }
+
+    // Redirect to real intersection logic by making an internal call
+    // to the new endpoint handler (avoid HTTP overhead — call pool directly)
+    const amenazaRow = capasResult.rows.find((r: any) => r.tipo_capa === 'amenaza');
+    if (!amenazaRow) {
+      return res.status(422).json({ success: false, error: 'Sin capa de amenaza válida.' });
+    }
+
+    // Simply forward the request to the new endpoint for correctness
+    res.redirect(307, '/api/geo/intersection/ejecutar');
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

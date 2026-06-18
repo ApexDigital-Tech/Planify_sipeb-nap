@@ -27,16 +27,76 @@ export interface ClimateMeasure {
   budget2030?: number;
 }
 
+/**
+ * 8 operative states for the geodesic intersection module.
+ * Replaces the previous binary PENDING/COMPLETED system.
+ * PENDING, RUNNING, COMPLETED kept for backward DB compatibility.
+ */
+export type GeodesicStatus =
+  | 'SIN_CAPA_BASE_CARGADA'        // No base layer uploaded for this instrument
+  | 'SIN_CAPA_DE_AMENAZA_CARGADA'  // Hazard layer missing
+  | 'GEOMETRIA_INVALIDA'           // Uploaded geometry failed topology validation
+  | 'EN_PROCESAMIENTO'             // ST_Intersection actively running
+  | 'PROCESADO_CON_RESULTADO'      // Intersection successful with spatial overlap
+  | 'PROCESADO_SIN_INTERSECCION'   // Layers valid but no spatial overlap found
+  | 'ERROR_DE_PROYECCION'          // SRID/EPSG incompatibility detected
+  | 'REQUIERE_REVISION_TECNICA'    // PostGIS error or data quality issue
+  // Legacy compatibility — maps to SIN_CAPA_BASE_CARGADA in UI
+  | 'PENDING'
+  | 'RUNNING'
+  | 'COMPLETED';
+
+/** Risk classification by coverage percentage thresholds */
+export type NivelRiesgoGeo = 'BAJO' | 'MODERADO' | 'ALTO' | 'CRÍTICO';
+
+/** Full geodesic intersection result stored per instrument */
+export interface GeodesicResult {
+  capaAmenazaId: string;
+  capaExposicionId: string;
+  intersectionGeoJSON: string;         // GeoJSON string of intersection geometry
+  areaInterseccionKm2: number;
+  areaExposicionKm2: number;
+  porcentajeAfectacion: number;
+  nivelRiesgo: NivelRiesgoGeo;
+  metricas: Record<string, string>;    // Key-value indicator display
+  capaNombre: string;                  // Source hazard layer name
+  capaFuente: string;                  // Data source attribution
+  capaFecha: string;                   // Layer update date
+  srid: string;                        // e.g. "EPSG:4326 (SIRGAS-WGS84)"
+  ejecutadoEn: string;                 // ISO timestamp
+  ejecutadoPor: string;                // User email
+  corrId: string;
+}
+
+/** Uploaded geographic layer record */
+export interface CapaGeografica {
+  id: string;
+  instrumento_id: string;
+  tipo_capa: 'amenaza' | 'exposicion';
+  nombre_archivo: string;
+  epsg_origen: string;
+  sha256_hash: string;
+  tamanio_kb: number;
+  cargado_por: string;
+  fecha_carga: string;
+  estado: 'PENDIENTE' | 'VALIDO' | 'ERROR_TOPOLOGIA';
+  area_km2?: number;
+}
+
 export interface VulnerabilityState {
   sensitivityLevel: number;
   expertJustification: string;
   expertJustificationVerified: boolean;
   gedsiText: string;
   gedsiTextVerified: boolean;
-  locationCrossoverStatus: 'PENDING' | 'RUNNING' | 'COMPLETED';
+  // Geodesic module fields
+  locationCrossoverStatus: GeodesicStatus;
+  geodesicResult: GeodesicResult | null;
+  geodesicStatusMessage: string;       // Human-readable institutional message
+  // Legacy indicator fields (kept for display compatibility)
   cropsAffectedHectares: number;
   populationExpCount: number;
-  projectionStandard: string; // must be SIRGAS/WGS84
+  projectionStandard: string;          // must be SIRGAS/WGS84
 }
 
 export interface AdaptationCapacityState {
