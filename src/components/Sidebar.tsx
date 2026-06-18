@@ -247,7 +247,6 @@ export default function Sidebar({ state, onSelectStep, activeStep, onStateUpdate
           instrumento_auditoria_logs
         </div>
       </div>
-      </div>
     </aside>
     </>
   );
