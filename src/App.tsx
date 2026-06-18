@@ -31,6 +31,7 @@ export default function App() {
   const queryClient = useQueryClient();
   const [activeStep, setActiveStep] = useState<number>(0);
   const [isLogsOpen, setIsLogsOpen] = useState(true);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   // Query: check current user session
   const { data: currentUser, isLoading: sessionLoading } = useQuery({
@@ -130,14 +131,16 @@ export default function App() {
       {/* Sidebar Stepper */}
       <Sidebar 
         state={state} 
-        onSelectStep={(step) => setActiveStep(step)} 
+        onSelectStep={(step) => { setActiveStep(step); setIsMobileSidebarOpen(false); }} 
         activeStep={activeStep} 
         onStateUpdate={handleStateUpdate}
         currentUser={currentUser}
+        isOpen={isMobileSidebarOpen}
+        onClose={() => setIsMobileSidebarOpen(false)}
       />
 
       {/* Main Container */}
-      <div className="flex-1 ml-[280px] min-h-screen flex flex-col pb-64 relative">
+      <div className="flex-1 md:ml-[280px] min-h-screen flex flex-col pb-64 relative w-full md:w-auto">
         
         {/* Professional Header */}
         <Header 
@@ -147,10 +150,11 @@ export default function App() {
           userRole={userRole}
           currentUser={currentUser}
           onLogout={handleLogout}
+          onToggleMenu={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
         />
 
         {/* Content Body Pane (Offset by header height) */}
-        <main className="px-10 py-8 mt-16 max-w-6xl w-full mx-auto flex-1">
+        <main className="px-4 md:px-10 py-8 mt-16 max-w-6xl w-full mx-auto flex-1 overflow-x-hidden">
           
           {/* Dashboard (Step 0) render, pre-completed steps 1 and 3, and interactive Step 2 */}
           {activeStep === 0 ? (
@@ -311,7 +315,7 @@ export default function App() {
         </main>
 
         {/* Live Business Audit Log Monitor (auditoria_negocio) panel docked at bottom */}
-        <section className={`fixed bottom-0 right-0 w-[calc(100%-280px)] bg-slate-950 text-white border-t border-slate-800 transition-all z-35 select-none ${
+        <section className={`fixed bottom-0 right-0 w-full md:w-[calc(100%-280px)] bg-slate-950 text-white border-t border-slate-800 transition-all z-35 select-none ${
           isLogsOpen ? 'h-52' : 'h-10'
         }`}>
           <div 

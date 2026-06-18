@@ -6,7 +6,8 @@ import {
   Layers, 
   Fingerprint, 
   FileCode,
-  ShieldCheck
+  ShieldCheck,
+  Menu
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -16,13 +17,17 @@ interface HeaderProps {
   userRole?: string;
   currentUser?: any;
   onLogout?: () => void;
+  onToggleMenu?: () => void;
 }
 
-export default function Header({ correlationId, isSigned, onReset, userRole, currentUser, onLogout }: HeaderProps) {
+export default function Header({ correlationId, isSigned, onReset, userRole, currentUser, onLogout, onToggleMenu }: HeaderProps) {
   return (
-    <header className="fixed top-0 right-0 h-16 flex justify-between items-center px-10 border-b border-[#e4e2e4] bg-white/80 backdrop-blur-md ml-[280px] w-[calc(100%-280px)] z-40 select-none">
+    <header className="fixed top-0 right-0 h-16 flex justify-between items-center px-4 md:px-10 border-b border-[#e4e2e4] bg-white/80 backdrop-blur-md md:ml-[280px] w-full md:w-[calc(100%-280px)] z-40 select-none">
       {/* Search/Workflow title area */}
-      <div className="flex items-center gap-6">
+      <div className="flex items-center gap-2 md:gap-6">
+        <button onClick={onToggleMenu} className="md:hidden p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer">
+          <Menu className="w-5 h-5" />
+        </button>
         <div className="flex items-center gap-2 text-slate-800">
           <Layers className="w-5 h-5 text-[#0058be]" />
           <span className="font-extrabold text-sm tracking-tight text-slate-900">
@@ -40,7 +45,7 @@ export default function Header({ correlationId, isSigned, onReset, userRole, cur
       </div>
 
       {/* Notifications, Settings & Profile */}
-      <div className="flex items-center gap-5">
+      <div className="flex items-center gap-2 md:gap-5">
         {/* Dynamic Correlation ID Tracker badge for QA */}
         <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-slate-100 border border-slate-200 rounded-md font-mono text-[10px] text-slate-600">
           <Fingerprint className="w-3.5 h-3.5 text-blue-600" />
@@ -50,13 +55,13 @@ export default function Header({ correlationId, isSigned, onReset, userRole, cur
 
         <button 
           onClick={onReset}
-          className="text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-yellow-50 hover:bg-yellow-100 text-yellow-700 border border-yellow-200 rounded transition-colors cursor-pointer"
+          className="hidden md:block text-[10px] uppercase font-bold tracking-wider px-2 py-1 bg-yellow-50 hover:bg-yellow-100 text-yellow-700 border border-yellow-200 rounded transition-colors cursor-pointer"
           title="Reiniciar Simulación de Datos"
         >
           Reiniciar Paso
         </button>
 
-        <div className="flex items-center gap-2 pr-2 border-r border-slate-200">
+        <div className="hidden sm:flex items-center gap-2 pr-2 border-r border-slate-200">
           <button className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-50 rounded-full transition-all cursor-pointer relative">
             <Bell className="w-4.5 h-4.5" />
             <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-rose-500 rounded-full border border-white" />
@@ -68,7 +73,7 @@ export default function Header({ correlationId, isSigned, onReset, userRole, cur
         </div>
 
         {/* User Badge Profile */}
-        <div className="flex items-center gap-3 pl-1">
+        <div className="flex items-center gap-2 md:gap-3 pl-1">
           <div className="text-right hidden sm:block">
             <p className="text-xs font-bold text-slate-800 leading-none">{currentUser?.name || "Arq. Marcelo Arce"}</p>
             <p className="text-[9px] text-[#0058be] uppercase tracking-wider font-extrabold mt-0.5">

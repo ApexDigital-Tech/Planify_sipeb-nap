@@ -19,11 +19,12 @@ interface SidebarProps {
   state: PlanState;
   onSelectStep: (step: number) => void;
   activeStep: number;
-  onStateUpdate: (updatedState: PlanState) => void;
   currentUser?: any;
+  isOpen?: boolean;
+  onClose?: () => void;
 }
 
-export default function Sidebar({ state, onSelectStep, activeStep, onStateUpdate, currentUser }: SidebarProps) {
+export default function Sidebar({ state, onSelectStep, activeStep, onStateUpdate, currentUser, isOpen, onClose }: SidebarProps) {
   const [isChanging, setIsChanging] = useState(false);
   const steps = [
     { num: 1, label: 'Marco Normativo' },
@@ -70,7 +71,15 @@ export default function Sidebar({ state, onSelectStep, activeStep, onStateUpdate
   };
 
   return (
-    <aside className="fixed left-0 top-0 h-screen w-[280px] bg-white flex flex-col z-50 text-slate-800 border-r border-slate-200 shadow-sm select-none">
+    <>
+      {/* Mobile overlay */}
+      {isOpen && (
+        <div 
+          className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-40 md:hidden transition-opacity" 
+          onClick={onClose} 
+        />
+      )}
+      <aside className={`fixed left-0 top-0 h-screen w-[280px] bg-white flex flex-col z-50 text-slate-800 border-r border-slate-200 shadow-sm select-none transition-transform duration-300 ${isOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0`}>
       {/* Brand Header */}
       <div className="p-6 flex flex-col gap-2 border-b border-slate-200 justify-center">
         <div className="flex items-center gap-3">
@@ -238,6 +247,8 @@ export default function Sidebar({ state, onSelectStep, activeStep, onStateUpdate
           instrumento_auditoria_logs
         </div>
       </div>
+      </div>
     </aside>
+    </>
   );
 }
