@@ -2714,91 +2714,173 @@ ID Medida\tNombre Medida\tDescripción Medida\tTipo Medida\tFuente Vinculada (Pa
   }
 });
 
-app.get('/api/export/word', async (req, res) => {
+app.get('/api/export/pdf', async (req, res) => {
   try {
     const planState = await getPlanState(activePlanType);
-    const header = `ESTADO PLURINACIONAL DE BOLIVIA
-MINISTERIO DE PLANIFICACIÓN DEL DESARROLLO
-============================================================
-EXPEDIENTE DE CONSOLIDACIÓN TÉCNIONA - SIPEB 2026-2030
-Formulación de Plan de Adaptación (PAD/PES) v2.4 Final
-============================================================
-Correlation ID: \t${(req as any).correlationId || 'corr-system'}
-Georreferenciación:\tEstándar SIRGAS/WGS84 Certificado
-Justificación GEDSI:\tAprobada de acuerdo a Criterio de Inclusión Social
-Resumen de Vulnerabilidad:\tNivel ${planState.vulnerability.sensitivityLevel} (Aprobación Semántica)
-SHA-256 Expediente:\t${planState.padesHash}
-Reglamentación General:\tEstatutos de Inmuno-Gobernanza de Ley 777 (SPIE)
-============================================================
-
-INFORME TÉCNICO OFICIAL DE SOPORTE:
-`;
-
+    
     const totalBudget = planState.measures.reduce((a, b) => a + b.budget, 0);
     
     let measuresText = "";
     planState.measures.forEach((m, idx) => {
-      measuresText += `   [Medida ${idx + 1}] ID: ${m.id} / TIPO: ${m.type.toUpperCase()}
-     Nombre: ${m.name}
-     Descripción: ${m.description}
-     Presupuesto Asignado: ${m.budget.toLocaleString('es-BO')} BOB
-     Fuente Diagnóstica (Paso 2): ${m.sourceId || 'No especificado'}\n\n`;
+      measuresText += `
+        <div class="measure-card">
+          <div class="measure-header"><strong>Medida ${idx + 1}:</strong> ${m.name}</div>
+          <div class="measure-body">
+            <div><strong>ID:</strong> ${m.id}</div>
+            <div><strong>Tipo:</strong> ${m.type.toUpperCase()}</div>
+            <div><strong>Presupuesto:</strong> ${m.budget.toLocaleString('es-BO')} BOB</div>
+            <div><strong>Fuente:</strong> ${m.sourceId || 'No especificado'}</div>
+            <div class="measure-desc">${m.description}</div>
+          </div>
+        </div>
+      `;
     });
 
-    const body = `
-1. MARCO NORMATIVO NACIONAL:
-   Completado y validado en su totalidad bajo los preceptos de la Ley N° 777 (Sistema de Planificación Integral del Estado - SPIE).
+    const htmlContent = `
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>SIPEB - Expediente Consolidado Oficial</title>
+    <style>
+        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; line-height: 1.5; margin: 0; padding: 20px; font-size: 12px; }
+        .header { text-align: center; border-bottom: 2px solid #0058be; padding-bottom: 15px; margin-bottom: 20px; }
+        .header img { max-height: 60px; margin-bottom: 10px; }
+        .header h1 { font-size: 16px; margin: 0 0 5px; color: #0058be; }
+        .header h2 { font-size: 14px; margin: 0; font-weight: normal; color: #555; }
+        
+        .meta-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 15px; margin-bottom: 20px; }
+        .meta-box table { width: 100%; font-size: 11px; }
+        .meta-box td { padding: 4px 8px; vertical-align: top; }
+        .meta-box td:first-child { font-weight: bold; width: 30%; color: #475569; }
+        
+        .section-title { font-size: 14px; font-weight: bold; color: #0058be; border-bottom: 1px solid #cbd5e1; padding-bottom: 5px; margin: 20px 0 10px; text-transform: uppercase; }
+        
+        .content-block { margin-bottom: 15px; }
+        .content-block p { margin: 5px 0; }
+        .content-block strong { color: #1e293b; }
+        
+        .measure-card { border: 1px solid #cbd5e1; border-radius: 4px; margin-bottom: 10px; page-break-inside: avoid; }
+        .measure-header { background: #f1f5f9; padding: 8px 12px; border-bottom: 1px solid #cbd5e1; font-size: 11px; }
+        .measure-body { padding: 8px 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; font-size: 10px; }
+        .measure-desc { grid-column: 1 / -1; margin-top: 5px; padding-top: 5px; border-top: 1px dashed #cbd5e1; }
+        
+        .signatures { margin-top: 40px; display: flex; justify-content: space-around; text-align: center; page-break-inside: avoid; }
+        .signature-box { width: 40%; }
+        .signature-line { border-top: 1px solid #000; margin-bottom: 5px; padding-top: 5px; font-weight: bold; }
+        .stamp-box { border: 2px dashed #0058be; color: #0058be; padding: 10px; text-align: center; width: fit-content; margin: 20px auto; transform: rotate(-5deg); font-weight: bold; font-family: monospace; }
+        
+        .footer { text-align: center; margin-top: 30px; font-size: 9px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 10px; }
 
-2. DIAGNÓSTICO TERRITORIAL:
-   Cruce espacial y conexión geodésica validados sobre modelo de vulnerabilidad hídrica nacional.
+        @media print {
+            body { padding: 0; }
+            .no-print { display: none; }
+        }
+    </style>
+</head>
+<body onload="window.print()">
+    <div class="no-print" style="background:#fef08a; padding:10px; text-align:center; font-weight:bold; margin-bottom:20px; border-radius:4px;">
+        Este documento está optimizado para impresión. Si el diálogo de impresión no se abre automáticamente, presione Ctrl+P o Cmd+P.
+    </div>
 
-3. PRIORIZACIÓN DE PROBLEMAS DE AMENAZA CLIMÁTICA:
-   Nivel de Amenaza Climática establecido en el Paso 3: ${planState.threatLevel} / 5 (Priorización Cuenca del Río Pilcomayo).
+    <div class="header">
+        <h1>ESTADO PLURINACIONAL DE BOLIVIA</h1>
+        <h2>MINISTERIO DE PLANIFICACIÓN DEL DESARROLLO</h2>
+        <h2 style="font-weight:bold; margin-top:10px;">EXPEDIENTE DE CONSOLIDACIÓN TÉCNICA - SIPEB 2026-2030</h2>
+        <h2>Formulación de Plan de Adaptación (${planState.planType}) v2.4 Final</h2>
+    </div>
 
-4. DETALLE DE ANÁLISIS DE VULNERABILIDAD EXPRESADO EN EL PASO 4:
-   - Nivel de Sensibilidad Sectorial: ${planState.vulnerability.sensitivityLevel}
-   - Justificación técnica-científica del experto: ${planState.vulnerability.expertJustification || "No fundamentada"}
-   - Sustento obligatorio inclusión y enfoque social (GEDSI): ${planState.vulnerability.gedsiText || "No redactado"}
-   - Hectáreas agrícolas afectadas estimadas: ${planState.vulnerability.cropsAffectedHectares} Ha.
-   - Población expuesta censada: ${planState.vulnerability.populationExpCount} Hab.
+    <div class="meta-box">
+        <table>
+            <tr><td>Correlation ID:</td><td style="font-family:monospace;">${(req as any).correlationId || 'corr-system'}</td></tr>
+            <tr><td>Georreferenciación:</td><td>Estándar SIRGAS/WGS84 Certificado</td></tr>
+            <tr><td>Justificación GEDSI:</td><td>Aprobada de acuerdo a Criterio de Inclusión Social</td></tr>
+            <tr><td>Nivel Vulnerabilidad:</td><td>Nivel ${planState.vulnerability.sensitivityLevel} (Aprobación Semántica)</td></tr>
+            <tr><td>SHA-256 Expediente:</td><td style="font-family:monospace;">${planState.padesHash}</td></tr>
+            <tr><td>Reglamentación:</td><td>Estatutos de Inmuno-Gobernanza de Ley 777 (SPIE)</td></tr>
+        </table>
+    </div>
 
-5. CAPACIDAD DE ADAPTACIÓN INSTITUCIONAL EVALUADA EN EL PASO 5:
-   - Evaluación por Dimensiones:
-     - Financiera: Nivel ${planState.adaptationCapacity.scores.Financiera || 0} / 5
-     - Técnica: Nivel ${planState.adaptationCapacity.scores.Tecnica || 0} / 5
-     - Normativa: Nivel ${planState.adaptationCapacity.scores.Normativa || 0} / 5
-     - Gobernanza: Nivel ${planState.adaptationCapacity.scores.Gobernanza || 0} / 5
-   - Índice de Alerta / Readiness General: ${planState.adaptationCapacity.readinessPct}%
-   - Flag de Inercia Institucional: ${planState.adaptationCapacity.inertiaFlagActive ? "ACTIVO (REQUIERE REFORZAMIENTO)" : "SUPERADO Y RESUELTO"}
+    <div class="section-title">1. MARCO NORMATIVO NACIONAL</div>
+    <div class="content-block">
+        <p>Completado y validado en su totalidad bajo los preceptos de la <strong>Ley N° 777</strong> (Sistema de Planificación Integral del Estado - SPIE).</p>
+    </div>
 
-6. SEMAFORIZACIÓN DEL RIESGO INTERACTIVO (VISOR GEODÉSICO POSTGIS - PASO 6):
-   - Municipio/Zona seleccionada administrativamente: Fila ${planState.climateRisk.selectedZone ? planState.climateRisk.selectedZone.r : 'N/A'}, Columna ${planState.climateRisk.selectedZone ? planState.climateRisk.selectedZone.c : 'N/A'}
-   - Factores de Análisis de Riesgo Multidimensional:
-     - Amenaza: ${planState.climateRisk.matrixFactors.amenaza}
-     - Sensibilidad: ${planState.climateRisk.matrixFactors.sensibilidad}
-     - Exposición: ${planState.climateRisk.matrixFactors.exposicion}
-     - Capacidad: ${planState.climateRisk.matrixFactors.capacidad}
-   - Índice de Riesgo Consolidado: ${planState.climateRisk.calculatedRisk || "Pendiente de Procesamiento"}
+    <div class="section-title">2. DIAGNÓSTICO TERRITORIAL</div>
+    <div class="content-block">
+        <p>Cruce espacial y conexión geodésica validados sobre modelo de vulnerabilidad hídrica nacional.</p>
+    </div>
 
-7. BANCO PLURIANUAL DE MEDIDAS CONSOLIDADO (PASO 7):
-   - Total Inversión Consolidada: ${totalBudget.toLocaleString('es-BO')} BOB
-   - Desglose de Medidas de Mitigación y Fortalecimiento:
-\n${measuresText}
+    <div class="section-title">3. PRIORIZACIÓN DE AMENAZA CLIMÁTICA</div>
+    <div class="content-block">
+        <p><strong>Nivel de Amenaza Climática:</strong> ${planState.threatLevel} / 5 (Priorización Cuenca del Río Pilcomayo).</p>
+    </div>
 
-Documento oficial certificado por la firma electrónica digital institucional (Agetic) de:
-FIRMADO POR: ${planState.signerName}
-CARGO: ${planState.signerRole}
-ESTADO DE CERTIFICADO: ${planState.signerCertificate}
-CÓDIGO DE AUTORIZACIÓN: SIPEB-${planState.padesHash.substring(0, 12).toUpperCase()}
+    <div class="section-title">4. DETALLE DE ANÁLISIS DE VULNERABILIDAD</div>
+    <div class="content-block">
+        <p><strong>Sensibilidad Sectorial:</strong> ${planState.vulnerability.sensitivityLevel}</p>
+        <p><strong>Justificación del experto:</strong> ${planState.vulnerability.expertJustification || "No fundamentada"}</p>
+        <p><strong>Inclusión Social (GEDSI):</strong> ${planState.vulnerability.gedsiText || "No redactado"}</p>
+        <p><strong>Superficie Afectada:</strong> ${planState.vulnerability.cropsAffectedHectares} Ha.</p>
+        <p><strong>Población Expuesta:</strong> ${planState.vulnerability.populationExpCount} Hab.</p>
+    </div>
 
-El presente expediente consolidado goza del Flag de Cierre de inmutabilidad de escritura por reglamentación del SPIE.
+    <div class="section-title">5. CAPACIDAD DE ADAPTACIÓN INSTITUCIONAL</div>
+    <div class="content-block">
+        <p><strong>Financiera:</strong> ${planState.adaptationCapacity.scores.Financiera || 0} / 5 | 
+           <strong>Técnica:</strong> ${planState.adaptationCapacity.scores.Tecnica || 0} / 5 | 
+           <strong>Normativa:</strong> ${planState.adaptationCapacity.scores.Normativa || 0} / 5 | 
+           <strong>Gobernanza:</strong> ${planState.adaptationCapacity.scores.Gobernanza || 0} / 5</p>
+        <p><strong>Índice Readiness:</strong> ${planState.adaptationCapacity.readinessPct}%</p>
+        <p><strong>Flag de Inercia:</strong> ${planState.adaptationCapacity.inertiaFlagActive ? "ACTIVO (Requiere Fortalecimiento)" : "Superado y Resuelto"}</p>
+    </div>
+
+    <div class="section-title">6. RIESGO MULTIDIMENSIONAL (GEODÉSICO)</div>
+    <div class="content-block">
+        <p><strong>Zona Seleccionada:</strong> Fila ${planState.climateRisk.selectedZone ? planState.climateRisk.selectedZone.r : 'N/A'}, Columna ${planState.climateRisk.selectedZone ? planState.climateRisk.selectedZone.c : 'N/A'}</p>
+        <p><strong>A:</strong> ${planState.climateRisk.matrixFactors.amenaza} | 
+           <strong>S:</strong> ${planState.climateRisk.matrixFactors.sensibilidad} | 
+           <strong>E:</strong> ${planState.climateRisk.matrixFactors.exposicion} | 
+           <strong>C:</strong> ${planState.climateRisk.matrixFactors.capacidad}</p>
+        <p><strong>Índice de Riesgo Consolidado:</strong> ${planState.climateRisk.calculatedRisk || "Pendiente"}</p>
+    </div>
+
+    <div class="section-title">7. BANCO PLURIANUAL DE MEDIDAS</div>
+    <div class="content-block">
+        <p><strong>Total Inversión Consolidada:</strong> ${totalBudget.toLocaleString('es-BO')} BOB</p>
+        <div style="margin-top: 15px;">
+            ${measuresText}
+        </div>
+    </div>
+
+    <div class="stamp-box">
+        SIPEB APROBADO<br>
+        <span style="font-size:8px;">${planState.padesHash.substring(0, 16)}</span>
+    </div>
+
+    <div class="signatures">
+        <div class="signature-box">
+            <div class="signature-line">${planState.signerName || 'Firma Digital Agetic'}</div>
+            <div>${planState.signerRole || 'Autoridad Competente'}</div>
+        </div>
+        <div class="signature-box">
+            <div class="signature-line">MPDyMA</div>
+            <div>Control de Legalidad SPIE</div>
+        </div>
+    </div>
+
+    <div class="footer">
+        Generado por Sistema SIPEB v2.4 • Fecha: ${new Date().toLocaleString('es-BO')} • ID: ${(req as any).correlationId || 'corr-system'}<br>
+        El presente expediente consolidado goza del Flag de Cierre de inmutabilidad de escritura por reglamentación del SPIE.
+    </div>
+</body>
+</html>
 `;
 
-    res.setHeader('Content-disposition', 'attachment; filename=SIPEB_Expediente_Consolidado_PAD.txt');
-    res.setHeader('Content-type', 'text/plain; charset=utf-8');
-    res.send(header + body);
+    res.setHeader('Content-type', 'text/html; charset=utf-8');
+    res.send(htmlContent);
   } catch (err: any) {
-    res.status(500).send("Error generating export: " + err.message);
+    res.status(500).send("Error generating PDF view: " + err.message);
   }
 });
 

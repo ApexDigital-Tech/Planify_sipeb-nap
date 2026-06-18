@@ -265,30 +265,59 @@ export default function TransactionalActions({ state, onStateUpdate, correlation
           <span className="absolute bottom-12 left-1/2 -translate-x-1/2 scale-0 group-hover:scale-100 bg-slate-900 text-white text-[10px] px-2 py-1 rounded font-bold whitespace-nowrap transition-all duration-300">Alertas de Auditoría</span>
         </button>
 
-        {/* PDF Export Shortcut */}
-        <div className="relative group">
-          {state.isClosed ? (
-            <a
-              href="/api/export/word"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition-all cursor-pointer flex items-center justify-center shadow-lg active:scale-95"
-              title="Descargar Expediente Consolidado Oficial"
-            >
-              <FileDown className="w-5 h-5" />
-            </a>
-          ) : (
-            <button
-              onClick={() => alert("Solo expedientes consolidados y validados por el MPDyMA pueden ser exportados de forma oficial conforme a las reglas del SPIE boliviano. Por favor proceda a firmar digitalmente y finalizar en el Paso 8.")}
-              className="p-3 bg-slate-100 text-slate-400 border border-slate-200/55 rounded-xl cursor-not-allowed flex items-center justify-center transition-all duration-200"
-              title="Solo expedientes validados pueden ser exportados de manera reglamentaria."
-            >
-              <FileDown className="w-5 h-5" />
-            </button>
-          )}
-          <span className="absolute bottom-12 left-1/2 -translate-x-1/2 scale-0 group-hover:scale-100 bg-slate-900 text-white text-[10px] px-2.5 py-1.5 rounded font-bold whitespace-wrap max-w-[150px] leading-relaxed text-center transition-all duration-300">
-            {state.isClosed ? "Descargar de Servidores" : "Exportar (Deshabilitado: Requiere Consolidación)"}
-          </span>
+        {/* Export Shortcuts */}
+        <div className="flex gap-2">
+          {/* PDF Export Shortcut */}
+          <div className="relative group">
+            {state.isClosed ? (
+              <a
+                href="/api/export/pdf"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-3 bg-red-600 hover:bg-red-700 text-white rounded-xl transition-all cursor-pointer flex items-center justify-center shadow-lg active:scale-95"
+                title="Exportar Expediente a PDF Oficial"
+              >
+                <FileText className="w-5 h-5" />
+              </a>
+            ) : (
+              <button
+                onClick={() => alert("Solo expedientes consolidados y validados por el MPDyMA pueden ser exportados de forma oficial conforme a las reglas del SPIE boliviano. Por favor proceda a firmar digitalmente y finalizar en el Paso 8.")}
+                className="p-3 bg-slate-100 text-slate-400 border border-slate-200/55 rounded-xl cursor-not-allowed flex items-center justify-center transition-all duration-200"
+                title="Solo expedientes validados pueden ser exportados de manera reglamentaria."
+              >
+                <FileText className="w-5 h-5" />
+              </button>
+            )}
+            <span className="absolute bottom-12 left-1/2 -translate-x-1/2 scale-0 group-hover:scale-100 bg-slate-900 text-white text-[10px] px-2.5 py-1.5 rounded font-bold whitespace-nowrap max-w-[150px] leading-relaxed text-center transition-all duration-300">
+              {state.isClosed ? "Exportar a PDF" : "PDF (Requiere Consolidación)"}
+            </span>
+          </div>
+
+          {/* Excel Export Shortcut */}
+          <div className="relative group">
+            {state.isClosed ? (
+              <a
+                href="/api/export/excel"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition-all cursor-pointer flex items-center justify-center shadow-lg active:scale-95"
+                title="Exportar Matriz de Inversión a Excel/CSV"
+              >
+                <FileSpreadsheet className="w-5 h-5" />
+              </a>
+            ) : (
+              <button
+                onClick={() => alert("Solo expedientes consolidados y validados por el MPDyMA pueden ser exportados de forma oficial conforme a las reglas del SPIE boliviano. Por favor proceda a firmar digitalmente y finalizar en el Paso 8.")}
+                className="p-3 bg-slate-100 text-slate-400 border border-slate-200/55 rounded-xl cursor-not-allowed flex items-center justify-center transition-all duration-200"
+                title="Solo expedientes validados pueden ser exportados de manera reglamentaria."
+              >
+                <FileSpreadsheet className="w-5 h-5" />
+              </button>
+            )}
+            <span className="absolute bottom-12 left-1/2 -translate-x-1/2 scale-0 group-hover:scale-100 bg-slate-900 text-white text-[10px] px-2.5 py-1.5 rounded font-bold whitespace-nowrap max-w-[150px] leading-relaxed text-center transition-all duration-300">
+              {state.isClosed ? "Exportar a Excel" : "Excel (Requiere Consolidación)"}
+            </span>
+          </div>
         </div>
 
         {/* UAT Sandboxing Fallo de Regla button */}
